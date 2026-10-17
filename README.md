@@ -1,63 +1,47 @@
-# FlightHunter AI — v1.0 (à publier sur Render)
+# FlightHunter AI — v2.0 (SerpApi)
 
-**Statut :** code et tests prêts. Aucun site public n'a encore été créé. Les prix en direct requièrent des identifiants API de production.
+FlightHunter est un outil **de recherche et de comparaison**, jamais de réservation, de paiement ou de collecte de données bancaires.
 
-## Utilité
+- Recherche initiale préremplie : Paris → Shanghai (PVG et SHA), 29/07/2027 — 20/08/2027, 2 adultes et 1 enfant de 8 ans.
+- SerpApi Google Flights : une requête de recherche des **allers** en AR, suivie d'une requête avec `departure_token` pour chacune des trois meilleures options de départ afin de récupérer un **retour réel**. Cette v2 ne prétend pas parcourir tous les itinéraires ni tous les revendeurs.
+- Les prix fournis par SerpApi pour les voyageurs sélectionnés sont **indicatifs** et doivent toujours être confirmés sur le site du vendeur. Bagages et suppléments à vérifier.
+- Liens de recherches préremplies vers Google Flights, KAYAK et Skyscanner, soumis à changement de formats ou filtrage anti-bot.
+- Pas d'intégration Amadeus en v2.
 
-Une application de recherche et de comparaison de vols pour usage personnel :
-- Par défaut : Paris → Shanghai (PVG et SHA), 29 juillet → 20 août 2027, 2 adultes et 1 enfant (8 ans), économie.
-- Dates, voyageurs, destination et escales modifiables.
-- Tri des **totaux aller-retour pour tous les passagers** réellement fournis par l'API (sans prix imaginaires).
-- Liens vers les recherches Google Flights, KAYAK et Skyscanner, avec les dates préremplies. Les sites peuvent modifier les liens et bloquer l'accès ; revérifier les paramètres à l'ouverture.
-- **Aucune réservation, aucun paiement ni enregistrement de coordonnées bancaires**.
+## Mise à jour du dépôt GitHub existant
 
-## Déployer en ligne sur Render (environ 4 étapes d'installation)
+Dans `https://github.com/papacherie/flighthunter`, sélectionne **Add file → Upload files**, puis dépose le **contenu décompressé** du dossier v2, pas le ZIP. GitHub peut demander de confirmer le remplacement des fichiers du même nom. La structure attendue est `app.py`, `static/app.js`, `static/index.html` et les autres fichiers à la racine du dépôt. Clique sur **Commit changes**. Render est connecté à `main` avec déploiement automatique.
 
-**Option privilégiée :** utiliser le plugin Render connecté à ChatGPT pour déployer les sources. Si l'outil ne peut pas déposer le code automatiquement, le projet est prêt pour un dépôt GitHub.
+## Configuration Render
 
-1. Créer un dépôt GitHub privé `flighthunter-ai` et y déposer les fichiers de ce dossier (PAS le dossier lui-même, les fichiers à la racine). Ne jamais y inclure de clés API.
-2. Render > **New** > **Web Service** : connecter le dépôt. Laisser Render lire `render.yaml` ou utiliser ces commandes :
-   - Build : `pip install -r requirements.txt`
-   - Start : `uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1`
-   - Python 3.12 / plan **Free** (pour essais, lorsque disponible).
-3. Render te donnera une adresse `https://…onrender.com`. Tu auras immédiatement accès à l'application et à ses **liens comparateurs**.
-4. Pour activer les **vrais prix en direct** et les classer automatiquement, obtenir des identifiants **Amadeus Self-Service en production** sur https://developers.amadeus.com , puis remplir dans Render > Environment :
+Service Render : https://dashboard.render.com/web/srv-db9svh8m7kps73eki300
 
-   - `AMADEUS_CLIENT_ID` : identifiant de production (SECRET)
-   - `AMADEUS_CLIENT_SECRET` : secret de production (SECRET)
-   - `AMADEUS_ENV` : `production`
-   - `APP_ACCESS_CODE` : code privé de ton choix, à saisir dans le volet « Configurer l'accès » de l'application.
+Dans **Environment** :
 
-   **Ne communique jamais les secrets en message ChatGPT.**
+- `SERPAPI_API_KEY` : ta clé SerpApi privée, **uniquement sur Render**.
+- `APP_ACCESS_CODE` : un code d'accès long et difficile à deviner, choisi par toi. Ce n'est **pas** la clé SerpApi. Tu le saisis ensuite dans « Configurer l'accès » sur le site FlightHunter afin de protéger les 250 appels gratuits mensuels.
+- Les anciennes variables `AMADEUS_*` ne sont pas utilisées par ce code et peuvent être retirées plus tard.
 
-Si Amadeus ne valide pas encore l'accès production, laisser le service en mode **liens comparateurs**. En mode `AMADEUS_ENV=test`, les tarifs retournés par Amadeus sont **des données de bac à sable, non commercialisables** ; l'application les étiquette explicitement comme telles.
+**Ne mets jamais ces valeurs sur GitHub, dans un PDF partagé, ou sur une capture d'écran.** Si tu as exposé ta clé SerpApi, révoque-la sur SerpApi et mets la nouvelle dans Render.
 
-**Limites :** Amadeus ne couvre pas nécessairement tous les vols de Google Flights. Les prix peuvent encore évoluer chez le vendeur. Les liens fournis ouvrent une **recherche**, pas un billet sélectionné. La recherche API et les liens comparateurs ne sont donc pas équivalents.
+Tant que `SERPAPI_API_KEY` **et** `APP_ACCESS_CODE` ne sont pas définis, le service refuse d'interroger SerpApi pour éviter qu'un visiteur épuise ton quota. Les liens des comparateurs restent disponibles.
 
-## Tester sur Mac ou Linux
+## Tester
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+```
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
 uvicorn app:app --reload
 ```
 
-Puis ouvrir http://127.0.0.1:8000
+Vérifications :
+- `/health` -> `{"ok":true}`
+- `/api/status` -> `ready:true`, `provider:"SerpApi"` seulement si les deux variables sont présentes.
+- Site -> « Configurer l'accès » -> saisir `APP_ACCESS_CODE` -> « Comparer les vols ».
+- Tarifs AR triés pour **3 voyageurs** avec allers **et retours** vérifiés séparément.
 
-Tests : `python -m unittest discover -s tests -v`
+## Quota et limites
 
-## Architecture
+Chaque recherche peut utiliser jusqu'à **4 requêtes SerpApi** : recherche des allers + recherche des retours pour 3 départs. Cache en mémoire 15 min. Ne pas utiliser de surveillance intensive sur le plan gratuit. Une recherche AR avec tous les retours n'est pas nécessairement équivalente à une disponibilité finale chez la compagnie. Il n'existe aucun mécanisme pour réserver ou bloquer les prix ici.
 
-- `app.py` : serveur FastAPI, endpoints `GET /health`, `GET /api/status`, `POST /api/search`.
-- `static/index.html`, `static/style.css`, `static/app.js` : interface responsive sans bibliothèque externe.
-- `render.yaml` : configuration de déploiement Render.
-- `tests/` : tests d'API, sécurité, filtrage des prix et liens.
-
-## Confidentialité / limites de sécurité
-
-Le code privé de recherche est conservé en mémoire temporaire de l'onglet, pas sur le serveur. La clé Amadeus n'est utilisée que côté serveur. Un contrôle basique de fréquence (20 secondes par adresse IP) empêchent des sollicitations répétées, mais cette v1 **n'est pas adaptée à une publication commerciale ouverte** sans authentification forte, limitation persistante, monitoring et politique de confidentialité. Un service Render Free peut s'endormir après 15 minutes d'inactivité (https://render.com/docs/free).
-
-## Utilisation directement depuis ChatGPT (optionnelle, pas encore configurée)
-
-Une fois ton site Render publié, le fichier `openapi-chatgpt.yaml` décrit une **Action de GPT**. Remplacer `REMPLACER-PAR-VOTRE-SITE` par le domaine obtenu, et configurer `X-Access-Code` comme clé API privée. Ne pas inclure les clés Amadeus dans la configuration du GPT. Cela permet à un GPT personnalisé d'interroger FlightHunter, mais cette connexion **n'existe pas encore** tant que le GPT n'est pas configuré.
+Documentation fournisseur : https://serpapi.com/google-flights-api.

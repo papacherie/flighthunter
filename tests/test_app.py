@@ -8,56 +8,99 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import httpx
 import app as fh
 
+C = {'origin': 'PAR', 'destination': 'ALL', 'departure': '2027-07-29',
+     'return': '2027-08-20', 'adults': 2, 'children': 1, 'stops': '1'}
+
+OUTBOUND = {'flights': [
+    {'departure_airport': {'id': 'CDG', 'time': '2027-07-29 10:50'},
+     'arrival_airport': {'id': 'BAH', 'time': '2027-07-29 18:00'}, 'airline': 'Gulf Air', 'flight_number': 'GF 12'},
+    {'departure_airport': {'id': 'BAH', 'time': '2027-07-29 21:00'},
+     'arrival_airport': {'id': 'PVG', 'time': '2027-07-30 11:55'}, 'airline': 'Gulf Air', 'flight_number': 'GF 124'}],
+    'total_duration': 1145, 'price': 2093, 'departure_token': 'validtoken123',
+    'layovers': [{'id': 'BAH', 'duration': 180}]}
+RETURN = {'flights': [
+    {'departure_airport': {'id': 'PVG', 'time': '2027-08-20 15:55'},
+     'arrival_airport': {'id': 'BAH', 'time': '2027-08-20 20:50'}, 'airline': 'Gulf Air', 'flight_number': 'GF 121'},
+    {'departure_airport': {'id': 'BAH', 'time': '2027-08-20 23:55'},
+     'arrival_airport': {'id': 'CDG', 'time': '2027-08-21 07:55'}, 'airline': 'Gulf Air', 'flight_number': 'GF 11'}],
+    'total_duration': 1205, 'price': 2113, 'layovers': [{'id': 'BAH', 'duration': 150}],
+    'booking_token': 'bookingTokenIsNotExposed'}
+
 
 class FlightHunterTests(unittest.TestCase):
-    def call(self, method, path, **kwargs):
-        async def run():
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fh.app), base_url='http://test') as client:
-                return await client.request(method, path, **kwargs)
-        return asyncio.run(run())
+    def request(self, method, path, **kwargs):
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fh.app), base_url='http://test') as c:
+                return await c.request(method, path, **kwargs)
+        return asyncio.run(go())
 
-    def test_home_and_health(self):
-        self.assertEqual(self.call('GET','/').status_code, 200)
-        self.assertIn('FlightHunter', self.call('GET','/').text)
-        self.assertEqual(self.call('GET','/health').json()['ok'], True)
+    def setUp(self):
+        fh.CACHE.clear()
+        fh.RATE.clear()
 
-    def test_invalid_dates(self):
-        r=self.call('POST','/api/search',json={'origin':'PAR','destination':'PVG','departure':'2027-08-20','return':'2027-07-29','adults':2,'children':1})
-        self.assertEqual(r.status_code,400)
+    def test_health(self):
+        self.assertEqual(self.request('GET', '/health').json()['ok'], True)
+        self.assertEqual(self.request('GET', '/').status_code, 200)
 
-    def test_no_api_returns_no_fake_prices(self):
-        with patch.object(fh, 'CLIENT',''), patch.object(fh, 'SECRET',''):
-            r=self.call('POST','/api/search',json={'origin':'PAR','destination':'ALL','departure':'2027-07-29','return':'2027-08-20','adults':2,'children':1,'stops':'any'})
-        self.assertEqual(r.status_code,200)
-        d=r.json()
-        self.assertEqual(d['offers'],[])
-        self.assertEqual(d['status'],'not_configured')
-        self.assertEqual(len(d['links']),2)
-        self.assertIn('google.com',d['links'][0]['google'])
+    def test_links_without_key(self):
+        with patch.object(fh, 'API_KEY', ''), patch.object(fh, 'ACCESS_CODE', ''):
+            r = self.request('POST', '/api/search', json=C)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['status'], 'not_configured')
+        self.assertEqual(r.json()['offers'], [])
+        self.assertEqual(len(r.json()['links']), 2)
 
-    def test_google_known_url_encoding(self):
-        self.assertIn('GhoSCjIwMjctMDctMjlqBRIDUEFScgUSA1BWRxoaEgoyMDI3LTA4LTIwagUSA1BWR3IFEgNQQVJAAUABQAJIAZgBAQ',
-            fh.flight_google_link('PAR','PVG','2027-07-29','2027-08-20',2,1))
+    def test_missing_code_blocks_api(self):
+        with patch.object(fh, 'API_KEY', 'a_fake_test_key'), patch.object(fh, 'ACCESS_CODE', ''):
+            r = self.request('GET', '/api/status')
+            self.assertTrue(r.json()['needs_access_code'])
+            self.assertFalse(r.json()['ready'])
 
-    def test_offer_mapping_and_stops(self):
-        data={'dictionaries':{'carriers':{'GF':'Gulf Air'}},'data':[
-          {'id':'23','price':{'grandTotal':'2093.00','currency':'EUR'},
-           'travelerPricings':[{'fareDetailsBySegment':[]},{'fareDetailsBySegment':[]},{'fareDetailsBySegment':[]}],
-           'itineraries':[
-             {'duration':'PT19H05M','segments':[
-                {'carrierCode':'GF','departure':{'at':'2027-07-29T10:50','iataCode':'CDG'},'arrival':{'at':'2027-07-29T15:00','iataCode':'BAH'}},
-                {'carrierCode':'GF','departure':{'at':'2027-07-29T18:00','iataCode':'BAH'},'arrival':{'at':'2027-07-30T11:55','iataCode':'PVG'}}]},
-             {'duration':'PT20H05M','segments':[{'carrierCode':'GF','departure':{'at':'2027-08-20T17:00','iataCode':'PVG'},'arrival':{'at':'2027-08-21T11:00','iataCode':'CDG'}}]}]}]}
-        offers=fh.normalize(data,'PVG','1',3)
-        self.assertEqual(len(offers),1)
-        self.assertEqual(offers[0]['carrier'],'Gulf Air')
-        self.assertEqual(offers[0]['price'],2093)
-        self.assertEqual(fh.normalize(data,'PVG','0',3),[])
-        self.assertEqual(fh.normalize(data,'PVG','any',2),[])
+    def test_serpapi_parameters(self):
+        with patch.object(fh, 'API_KEY', 'mock'):
+            p = fh.serpapi_parameters(C)
+        self.assertEqual(p['engine'], 'google_flights')
+        self.assertEqual(p['departure_id'], 'CDG,ORY')
+        self.assertEqual(p['arrival_id'], 'PVG,SHA')
+        self.assertEqual(p['adults'], 2)
+        self.assertEqual(p['children'], 1)
+        self.assertEqual(p['stops'], 2)
 
-    def test_api_code_required_with_keys(self):
-        with patch.object(fh,'CLIENT','dummy'),patch.object(fh,'SECRET','dummy'),patch.object(fh,'CODE','private-code'):
-            r=self.call('POST','/api/search',json={'origin':'PAR','destination':'PVG','departure':'2027-07-29','return':'2027-08-20','adults':2,'children':1,'stops':'any'})
-            self.assertEqual(r.status_code,401)
+    def test_return_flight_verified_and_sorted(self):
+        with patch.object(fh, 'serpapi_query', return_value={'other_flights': [RETURN]}) as provider:
+            offers = fh.price_offers({'best_flights': [OUTBOUND]}, C)
+        self.assertEqual(len(offers), 1)
+        self.assertEqual(offers[0]['price'], 2113)
+        self.assertEqual(offers[0]['outbound']['stops'], 1)
+        self.assertEqual(offers[0]['inbound']['stops'], 1)
+        self.assertEqual(provider.call_args[0][1], 'validtoken123')
+        self.assertNotIn('validtoken123', str(offers))
+        self.assertNotIn('bookingTokenIsNotExposed', str(offers))
 
-if __name__=='__main__': unittest.main()
+    def test_wrong_return_day_not_presented(self):
+        invalid = {**RETURN, 'flights': [
+            {**RETURN['flights'][0], 'departure_airport': {'id': 'PVG', 'time': '2027-08-21 15:55'}},
+            RETURN['flights'][1]]}
+        with patch.object(fh, 'serpapi_query', return_value={'best_flights': [invalid]}):
+            offers = fh.price_offers({'other_flights': [OUTBOUND]}, C)
+        self.assertEqual(offers, [])
+
+    def test_bad_access_code_rejected_before_provider(self):
+        with patch.object(fh, 'API_KEY', 'mock'), patch.object(fh, 'ACCESS_CODE', 'correct'):
+            r = self.request('POST', '/api/search', json=C, headers={'X-Access-Code': 'wrong'})
+        self.assertEqual(r.status_code, 401)
+
+    def test_end_to_end_backend_mock(self):
+        with patch.object(fh, 'API_KEY', 'mock'), patch.object(fh, 'ACCESS_CODE', 'correct'), \
+             patch.object(fh, 'serpapi_query', side_effect=[{'best_flights': [OUTBOUND]}, {'other_flights': [RETURN]}]) as q:
+            r = self.request('POST', '/api/search', json=C, headers={'X-Access-Code': 'correct'})
+            self.assertEqual(r.status_code, 200)
+            d = r.json()
+            self.assertEqual(d['count'], 1)
+            self.assertEqual(d['offers'][0]['price'], 2113)
+            self.assertEqual(len(q.call_args_list), 2)
+            r2 = self.request('POST', '/api/search', json=C, headers={'X-Access-Code': 'correct'})
+            self.assertTrue(r2.json()['from_cache'])
+
+if __name__ == '__main__':
+    unittest.main()

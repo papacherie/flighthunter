@@ -1,18 +1,19 @@
-"""FlightHunter AI: flight search, pricing display, referral only. No booking/payments.
+"""FlightHunter AI v2 — flight discovery through SerpApi Google Flights.
 
-Amadeus test prices are not real. In production, offers still need final seller checks.
+No ticket booking or payment. API key is server side only.
+Results are indicative and are ALWAYS rechecked with the seller.
 """
 from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
+import json
 import os
 import re
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -22,208 +23,272 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
-app = FastAPI(title='FlightHunter AI', version='1.0.0', docs_url=None, redoc_url=None)
-app.mount('/static', StaticFiles(directory=ROOT/'static'), name='static')
-ENV = os.getenv('AMADEUS_ENV', 'test').lower()
-BASE = 'https://api.amadeus.com' if ENV == 'production' else 'https://test.api.amadeus.com'
-CLIENT = os.getenv('AMADEUS_CLIENT_ID', '').strip()
-SECRET = os.getenv('AMADEUS_CLIENT_SECRET', '').strip()
-CODE = os.getenv('APP_ACCESS_CODE', '').strip()
-_TOKEN: dict = {'value':'', 'expiration':0.0}
-_TOKEN_LOCK = threading.Lock()
-_RATE_LOCK = threading.Lock()
-_RATE: dict[str,float] = {}
+app = FastAPI(title='FlightHunter AI', version='2.0.0', docs_url=None, redoc_url=None)
+app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
+
+API_KEY = os.environ.get('SERPAPI_API_KEY', '').strip()
+ACCESS_CODE = os.environ.get('APP_ACCESS_CODE', '').strip()
+SERPAPI_URL = 'https://serpapi.com/search.json'
+RATE_LOCK = threading.Lock()
+RATE: dict[str, float] = {}
+CACHE_LOCK = threading.RLock()
+CACHE: dict[str, tuple[float, dict]] = {}
+CACHE_SECONDS = 15 * 60
 
 
 def is_ready() -> bool:
-    return bool(CLIENT and SECRET and CODE)
+    # Require private access code to protect shared free API quota on a public website.
+    return bool(API_KEY and ACCESS_CODE)
 
 
-def validate(d: dict) -> dict:
-    origin = str(d.get('origin','PAR')).strip().upper()
-    dest = str(d.get('destination','ALL')).strip().upper()
-    start, end = str(d.get('departure','')).strip(), str(d.get('return','')).strip()
-    adults, children = int(d.get('adults',2)), int(d.get('children',1))
-    stops = str(d.get('stops','any'))
-    if not re.fullmatch('[A-Z]{3}', origin):
-        raise ValueError('Départ : code IATA à trois lettres requis.')
-    if dest not in ('PVG','SHA','ALL'):
-        raise ValueError('Choisir un aéroport de Shanghai valide.')
+def validate(body: dict) -> dict:
+    if not isinstance(body, dict):
+        raise ValueError('Paramètres de recherche invalides.')
+    origin = str(body.get('origin', 'PAR')).strip().upper()
+    dest = str(body.get('destination', 'ALL')).strip().upper()
+    start, end = str(body.get('departure', '')).strip(), str(body.get('return', '')).strip()
     try:
-        ds,de = dt.date.fromisoformat(start),dt.date.fromisoformat(end)
-    except ValueError as e:
-        raise ValueError('Dates invalides.') from e
-    if ds < dt.date.today() or de <= ds:
-        raise ValueError('Le départ doit être à venir et le retour ultérieur.')
-    if de > dt.date.today()+dt.timedelta(days=365):
-        raise ValueError('Plus de 365 jours à l’avance : disponibilités généralement non ouvertes.')
-    if adults not in range(1,7) or children not in range(0,4) or adults+children>8:
-        raise ValueError('Voyageurs incorrects (1–8, dont un adulte).')
-    if stops not in ('any','0','1','2'):
-        raise ValueError('Nombre d’escales incorrect.')
-    return {'origin':origin,'destination':dest,'departure':start,'return':end,'adults':adults,'children':children,'stops':stops}
+        adults = int(body.get('adults', 2))
+        children = int(body.get('children', 1))
+    except (ValueError, TypeError) as exc:
+        raise ValueError('Nombre de voyageurs invalide.') from exc
+    stops = str(body.get('stops', 'any')).strip()
+    if not re.fullmatch(r'[A-Z]{3}', origin):
+        raise ValueError('Le départ doit être un code IATA à trois lettres.')
+    if dest not in ('ALL', 'PVG', 'SHA'):
+        raise ValueError('Aéroport de Shanghai invalide.')
+    try:
+        departure = dt.date.fromisoformat(start)
+        arrival = dt.date.fromisoformat(end)
+    except ValueError as exc:
+        raise ValueError('Dates invalides.') from exc
+    if departure < dt.date.today() or arrival <= departure:
+        raise ValueError('Le départ doit être futur et le retour après le départ.')
+    if arrival > dt.date.today() + dt.timedelta(days=365):
+        raise ValueError('Les dates sont au-delà des calendriers courants (365 jours).')
+    if not (1 <= adults <= 6 and 0 <= children <= 3 and adults + children <= 8):
+        raise ValueError('Voyageurs incorrects : 1 à 8, avec au moins un adulte.')
+    if stops not in ('any', '0', '1', '2'):
+        raise ValueError('Nombre d’escales invalide.')
+    return {'origin': origin, 'destination': dest, 'departure': start, 'return': end,
+            'adults': adults, 'children': children, 'stops': stops}
 
 
-def flight_google_link(origin:str,dest:str,outbound:str,inbound:str,adults:int,children:int) -> str:
-    """Encode the observed Google Flights URL; format is undocumented and can change."""
-    def leg(date, frm, to):
-        return b'\x1a\x1a\x12\x0a'+date.encode('ascii')+b'j\x05\x12\x03'+frm.encode('ascii')+b'r\x05\x12\x03'+to.encode('ascii')
-    blob=leg(outbound,origin,dest)+leg(inbound,dest,origin)+b'\x40\x01'*adults+b'\x40\x02'*children+b'\x48\x01\x98\x01\x01'
-    return 'https://www.google.com/travel/flights?'+urlencode({'hl':'fr','curr':'EUR','tfs':base64.urlsafe_b64encode(blob).decode().rstrip('=')})
+def flight_google_link(origin: str, dest: str, outbound: str, inbound: str, adults: int, children: int) -> str:
+    """Observed Google Flights URL structure. Format is undocumented and may break."""
+    def leg(date: str, frm: str, to: str) -> bytes:
+        return b'\x1a\x1a\x12\x0a' + date.encode() + b'j\x05\x12\x03' + frm.encode() + b'r\x05\x12\x03' + to.encode()
+    blob = leg(outbound, origin, dest) + leg(inbound, dest, origin) + b'\x40\x01' * adults + b'\x40\x02' * children + b'\x48\x01\x98\x01\x01'
+    return 'https://www.google.com/travel/flights?' + urlencode({'hl': 'fr', 'curr': 'EUR', 'tfs': base64.urlsafe_b64encode(blob).decode().rstrip('=')})
 
 
-def search_links(criteria:dict) -> list[dict]:
-    c=criteria
-    result=[]
-    for dest in (['PVG','SHA'] if c['destination']=='ALL' else [c['destination']]):
-        dep,ret=c['departure'],c['return']
+def search_links(c: dict) -> list[dict]:
+    result = []
+    for dest in (('PVG', 'SHA') if c['destination'] == 'ALL' else (c['destination'],)):
+        a, b = c['departure'], c['return']
         result.append({
-            'destination':dest,
-            'google':flight_google_link(c['origin'],dest,dep,ret,c['adults'],c['children']),
-            'kayak':'https://www.kayak.fr/flights/'+c['origin']+'-'+dest+'/'+dep+'/'+ret+'?'+urlencode({'sort':'price_a','adults':c['adults'],'children':c['children'],'childages':','.join('8' for _ in range(c['children']))}),
-            'skyscanner':'https://www.skyscanner.fr/transport/vols/'+c['origin'].lower()+'/'+dest.lower()+'/'+dep[2:].replace('-','')+'/'+ret[2:].replace('-','')+'/?'+urlencode({'adultsv2':c['adults'],'childrenv2':','.join('8' for _ in range(c['children'])),'cabinclass':'economy','rtn':1})
+            'destination': dest,
+            'google': flight_google_link(c['origin'], dest, a, b, c['adults'], c['children']),
+            'kayak': 'https://www.kayak.fr/flights/' + c['origin'] + '-' + dest + '/' + a + '/' + b + '?' + urlencode({
+                'sort': 'price_a', 'adults': c['adults'], 'children': c['children'], 'childages': ','.join('8' for _ in range(c['children']))}),
+            'skyscanner': 'https://www.skyscanner.fr/transport/vols/' + c['origin'].lower() + '/' + dest.lower() + '/' + a[2:].replace('-', '') + '/' + b[2:].replace('-', '') + '/?' + urlencode({
+                'adultsv2': c['adults'], 'childrenv2': ','.join('8' for _ in range(c['children'])), 'cabinclass': 'economy', 'rtn': 1})
         })
     return result
 
 
-def token() -> str:
-    now=time.monotonic()
-    with _TOKEN_LOCK:
-        if _TOKEN['value'] and _TOKEN['expiration']-60>now:
-            return _TOKEN['value']
-        r=requests.post(BASE+'/v1/security/oauth2/token',data={'grant_type':'client_credentials','client_id':CLIENT,'client_secret':SECRET},timeout=12)
-        r.raise_for_status()
-        obj=r.json()
-        _TOKEN.update(value=obj['access_token'],expiration=now+int(obj.get('expires_in',1200)))
-        return _TOKEN['value']
+def serpapi_parameters(c: dict, departure_token: str | None = None) -> dict:
+    # Stops are different from FlightHunter's filter: 0=any, 1=nonstop, 2=<=1, 3=<=2.
+    stops = {'any': 0, '0': 1, '1': 2, '2': 3}[c['stops']]
+    params = {'engine': 'google_flights', 'api_key': API_KEY, 'type': 1,
+              'departure_id': 'CDG,ORY' if c['origin'] == 'PAR' else c['origin'],
+              'arrival_id': 'PVG,SHA' if c['destination'] == 'ALL' else c['destination'],
+              'outbound_date': c['departure'], 'return_date': c['return'],
+              'adults': c['adults'], 'children': c['children'], 'travel_class': 1,
+              'currency': 'EUR', 'gl': 'fr', 'hl': 'fr', 'sort_by': 2,
+              'stops': stops, 'no_cache': 'false'}
+    if departure_token:
+        params['departure_token'] = departure_token
+    return params
 
 
-def query_airport(c:dict,dest:str,bearer:str) -> dict:
-    params={'originLocationCode':c['origin'],'destinationLocationCode':dest,'departureDate':c['departure'],
-            'returnDate':c['return'],'adults':c['adults'],'children':c['children'],
-            'currencyCode':'EUR','travelClass':'ECONOMY','max':40}
-    r=requests.get(BASE+'/v2/shopping/flight-offers',headers={'Authorization':'Bearer '+bearer,'Accept':'application/json'},params=params,timeout=24)
-    if not r.ok:
-        raise RuntimeError(f'{dest}: HTTP {r.status_code} (fournisseur indisponible)')
-    return r.json()
+def serpapi_query(c: dict, departure_token: str | None = None) -> dict:
+    response = requests.get(SERPAPI_URL, params=serpapi_parameters(c, departure_token), timeout=35)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise RuntimeError('Réponse fournisseur invalide.')
+    if data.get('error'):
+        raise RuntimeError('SerpApi a signalé une erreur : consulte ton solde ou les paramètres dans SerpApi.')
+    return data
 
 
-def leg_info(item:dict, carriers:dict) -> dict:
-    segments=item.get('segments') or []
-    if not segments:
+def rows(data: dict) -> list[dict]:
+    return [f for section in ('best_flights', 'other_flights') for f in (data.get(section) or []) if isinstance(f, dict)]
+
+
+def parsed_price(f: dict) -> float | None:
+    try:
+        price = float(f.get('price'))
+        if not 0 < price < 1_000_000:
+            return None
+        return price
+    except (ValueError, TypeError):
+        return None
+
+
+def leg_info(offer: dict) -> dict:
+    flights = offer.get('flights') or []
+    if not flights or not isinstance(flights, list):
         return {}
-    airlines=list(dict.fromkeys(carriers.get(s.get('carrierCode',''),s.get('carrierCode','')) for s in segments))
-    return {'stops':len(segments)-1,'from':segments[0].get('departure',{}).get('iataCode',''),
-            'to':segments[-1].get('arrival',{}).get('iataCode',''),
-            'departure':segments[0].get('departure',{}).get('at',''),
-            'arrival':segments[-1].get('arrival',{}).get('at',''),
-            'via':[s.get('arrival',{}).get('iataCode','') for s in segments[:-1]],
-            'carriers':airlines,'duration':item.get('duration','')}
+    first, last = flights[0], flights[-1]
+    depart, arrive = first.get('departure_airport') or {}, last.get('arrival_airport') or {}
+    airlines = list(dict.fromkeys(str(f.get('airline') or '') for f in flights if f.get('airline')))
+    minutes = offer.get('total_duration')
+    try:
+        mins = int(minutes)
+        duration = f'PT{mins // 60}H{mins % 60}M' if mins >= 0 else ''
+    except (TypeError, ValueError):
+        duration = ''
+    return {'stops': len(flights) - 1, 'from': depart.get('id') or '', 'to': arrive.get('id') or '',
+            'departure': (depart.get('time') or '').replace(' ', 'T'),
+            'arrival': (arrive.get('time') or '').replace(' ', 'T'),
+            'via': [str(x.get('id')) for x in (offer.get('layovers') or []) if x.get('id')],
+            'carriers': airlines, 'duration': duration}
 
 
-def bag_details(offer:dict) -> str:
-    values=set()
-    for traveler in offer.get('travelerPricings') or []:
-        for fare in traveler.get('fareDetailsBySegment') or []:
-            bag=fare.get('includedCheckedBags') or {}
-            if 'quantity' in bag:
-                values.add(f"{bag['quantity']} pièce(s)")
-            elif 'weight' in bag:
-                values.add(f"{bag['weight']} {bag.get('weightUnit','kg')}")
-    return (next(iter(values))+' en soute (sous réserve)') if len(values)==1 else 'À confirmer chez le vendeur'
+def trip_matches_leg(leg: dict, c: dict, outbound: bool) -> bool:
+    if not leg:
+        return False
+    if outbound:
+        airport = ('CDG', 'ORY') if c['origin'] == 'PAR' else (c['origin'],)
+        dest = ('PVG', 'SHA') if c['destination'] == 'ALL' else (c['destination'],)
+        return leg.get('from') in airport and leg.get('to') in dest and str(leg.get('departure', '')).startswith(c['departure'])
+    airport = ('CDG', 'ORY') if c['origin'] == 'PAR' else (c['origin'],)
+    dest = ('PVG', 'SHA') if c['destination'] == 'ALL' else (c['destination'],)
+    return leg.get('from') in dest and leg.get('to') in airport and str(leg.get('departure', '')).startswith(c['return'])
 
 
-def normalize(data:dict,dest:str,stops_filter:str,travelers_count:int) -> list[dict]:
-    results=[]
-    carriers=(data.get('dictionaries') or {}).get('carriers') or {}
-    for o in data.get('data',[]):
-        legs=o.get('itineraries') or []
-        if len(legs)!=2:continue
-        if len(o.get('travelerPricings') or [])!=travelers_count:continue
-        outbound,inbound=leg_info(legs[0],carriers),leg_info(legs[1],carriers)
-        if not outbound or not inbound:continue
-        if stops_filter!='any' and any(l['stops']>int(stops_filter) for l in [outbound,inbound]):continue
-        price_obj=o.get('price') or {}
-        if price_obj.get('currency')!='EUR':continue
+def price_offers(data: dict, c: dict) -> list[dict]:
+    """Only return flights verified by a second SerpApi request are considered complete."""
+    available = []
+    seen = set()
+    for outbound_item in sorted(rows(data), key=lambda o: parsed_price(o) or 1e8):
+        token = outbound_item.get('departure_token')
+        out = leg_info(outbound_item)
+        if not token or not trip_matches_leg(out, c, True):
+            continue
+        if c['stops'] != 'any' and out['stops'] > int(c['stops']):
+            continue
+        flight_numbers = tuple(str(f.get('flight_number') or '') for f in outbound_item.get('flights') or [])
+        if flight_numbers in seen:
+            continue
+        seen.add(flight_numbers)
+        available.append((outbound_item, token, out))
+        if len(available) >= 3:
+            break
+    result = []
+    # Max 1 outbound search + 3 return searches: manageable free-tier usage.
+    for outbound_item, token, out in available:
         try:
-            price=Decimal(str(price_obj['grandTotal']))
-            if not price.is_finite() or price<=0:continue
-        except (InvalidOperation,KeyError,TypeError):continue
-        airline=' / '.join(dict.fromkeys(outbound['carriers']+inbound['carriers']))
-        results.append({'id':f'{dest}:{o.get("id","")}', 'source':'Amadeus', 'price':float(price),
-                        'carrier':airline,'outbound':outbound,'inbound':inbound,
-                        'destination':dest,'baggage':bag_details(o),
-                        'price_status':'À confirmer chez le vendeur'})
-    return results
+            returning = serpapi_query(c, token)
+        except (requests.RequestException, RuntimeError, ValueError):
+            continue
+        cheapest = sorted(rows(returning), key=lambda o: parsed_price(o) or 1e8)
+        for back_item in cheapest:
+            price = parsed_price(back_item)
+            back = leg_info(back_item)
+            if not price or not trip_matches_leg(back, c, False):
+                continue
+            if c['stops'] != 'any' and back['stops'] > int(c['stops']):
+                continue
+            carriers = list(dict.fromkeys(out['carriers'] + back['carriers']))
+            dest = out['to']
+            fingerprint = hashlib.sha256(repr((out['departure'], back['departure'], carriers, price)).encode()).hexdigest()[:15]
+            result.append({'id': fingerprint, 'source': 'Google Flights via SerpApi', 'price': price,
+                           'carrier': ' / '.join(carriers) or 'Compagnie non précisée',
+                           'outbound': out, 'inbound': back, 'destination': dest,
+                           'baggage': 'À vérifier lors de la réservation',
+                           'price_status': 'Prix affiché, non garanti chez le vendeur',
+                           'booking_link': flight_google_link(c['origin'], dest, c['departure'], c['return'], c['adults'], c['children'])})
+            break  # cheapest valid return for this specific outbound itinerary
+    return sorted(result, key=lambda offer: offer['price'])
 
 
 @app.middleware('http')
-async def security_headers(request:Request, call_next):
-    res=await call_next(request)
-    res.headers['X-Content-Type-Options']='nosniff'
-    res.headers['X-Frame-Options']='DENY'
-    res.headers['Cache-Control']='no-store'
-    res.headers['Referrer-Policy']='strict-origin-when-cross-origin'
-    res.headers['Content-Security-Policy']="default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+async def security_headers(request: Request, call_next):
+    res = await call_next(request)
+    res.headers['X-Content-Type-Options'] = 'nosniff'
+    res.headers['X-Frame-Options'] = 'DENY'
+    res.headers['Cache-Control'] = 'no-store'
+    res.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    res.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
     return res
 
 
 @app.get('/')
-def home():return FileResponse(ROOT/'static'/'index.html')
+def home():
+    return FileResponse(ROOT / 'static' / 'index.html')
 
 
 @app.get('/health')
-def health():return {'ok':True,'product':'FlightHunter AI'}
+def health():
+    return {'ok': True, 'product': 'FlightHunter AI'}
 
 
 @app.get('/api/status')
-def api_status():
-    return {'product':'FlightHunter AI','ready':is_ready(),'api_mode':ENV if is_ready() else 'links_only',
-            'private_search':bool(CODE)}
+def status():
+    return {'product': 'FlightHunter AI', 'ready': is_ready(),
+            'api_mode': 'production' if is_ready() else 'links_only',
+            'provider': 'SerpApi' if API_KEY else 'none',
+            'needs_access_code': bool(API_KEY and not ACCESS_CODE),
+            'private_search': bool(ACCESS_CODE)}
 
 
 @app.post('/api/search')
-def search(body:dict,request:Request):
+def search(body: dict, request: Request):
     try:
-        c=validate(body)
-    except (ValueError,OverflowError,TypeError) as e:
-        return JSONResponse({'error':str(e)},status_code=400)
-    result={'criteria':c,'links':search_links(c),'offers':[],
-            'checked_at':dt.datetime.now(dt.timezone.utc).isoformat(),
-            'warning':'Confirme le prix, les passagers et les bagages avant le paiement.'}
+        criteria = validate(body)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+    response = {'criteria': criteria, 'links': search_links(criteria), 'offers': [],
+                'checked_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+                'warning': 'Prix issus de Google Flights, non garantis. Vérifie tarifs, passagers, bagages et disponibilité chez le vendeur.'}
     if not is_ready():
-        result.update(status='not_configured',mode='links_only',message='Comparateurs disponibles ; aucun fournisseur de prix en direct connecté. Aucun faux tarif.')
-        return result
-    provided=request.headers.get('X-Access-Code','')
-    if not secrets.compare_digest(provided,CODE):
-        return JSONResponse({'error':'Code privé incorrect. Ouvre « Configurer l’accès » pour le saisir.'},status_code=401)
-    addr=request.client.host if request.client else 'unknown'
-    now=time.monotonic()
-    with _RATE_LOCK:
-        if now-_RATE.get(addr,-1e10)<20:
-            return JSONResponse({'error':'Recherche trop rapprochée : réessaie dans quelques secondes.'},status_code=429)
-        _RATE[addr]=now
-        if len(_RATE)>1000:_RATE.clear()
+        response.update(status='not_configured', mode='links_only',
+                        message=('Clé SerpApi détectée. Configure aussi APP_ACCESS_CODE dans Render pour protéger ton quota gratuit.'
+                                 if API_KEY else 'Comparateurs disponibles. SerpApi n’est pas encore configuré.'))
+        return response
+    supplied = request.headers.get('X-Access-Code', '')
+    if not secrets.compare_digest(supplied, ACCESS_CODE):
+        return JSONResponse({'error': 'Code privé de recherche incorrect.'}, status_code=401)
+    stamp = time.monotonic()
+    addr = request.client.host if request.client else 'unknown'
+    cache_key = json.dumps(criteria, sort_keys=True)
+    with CACHE_LOCK:
+        cache = CACHE.get(cache_key)
+        if cache and cache[0] > stamp:
+            value = {**cache[1], 'from_cache': True}
+            return value
+        if len(CACHE) > 60:
+            CACHE.clear()
+    with RATE_LOCK:
+        if stamp - RATE.get(addr, -1e20) < 25:
+            return JSONResponse({'error': 'Recherche trop rapprochée. Réessaie dans 25 secondes.'}, status_code=429)
+        RATE[addr] = stamp
+        if len(RATE) > 1000:
+            RATE.clear()
     try:
-        bearer=token()
-    except (requests.RequestException,ValueError,KeyError):
-        result.update(status='provider_error',message='Identification API Amadeus impossible. Vérifie les variables d’environnement.')
-        return JSONResponse(result,status_code=502)
-    airports=['PVG','SHA'] if c['destination']=='ALL' else [c['destination']]
-    offers,errors=[],[]
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures={executor.submit(query_airport,c,a,bearer):a for a in airports}
-        for fut in as_completed(futures):
-            name=futures[fut]
-            try:offers.extend(normalize(fut.result(),name,c['stops'],c['adults']+c['children']))
-            except (requests.RequestException,RuntimeError,ValueError,KeyError,TypeError) as e:
-                errors.append(str(e)[:100])
-    offers.sort(key=lambda x:x['price'])
-    result.update(offers=offers[:30],count=len(offers),provider_errors=errors,
-                  is_test_data=ENV!='production',
-                  status='ok' if offers else ('provider_error' if errors else 'empty'),
-                  message='Prix retournés par Amadeus (non garantis lors de la réservation).' if offers else
-                  'Aucun prix pour ces critères sur les sources disponibles.')
-    if ENV!='production':
-        result['warning']='Mode TEST Amadeus : ces tarifs ne sont PAS des prix réels, ni réservables.'
-    return result
+        data = serpapi_query(criteria)
+        offers = price_offers(data, criteria)
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        response.update(status='provider_error', message='Le fournisseur de vols ne répond pas. Vérifie l’état du compte SerpApi et réessaie.')
+        return JSONResponse(response, status_code=502)
+    response.update(offers=offers, count=len(offers), status='ok' if offers else 'empty',
+                    provider='SerpApi / Google Flights', from_cache=False,
+                    message=('Offres aller-retour avec vol retour vérifié pour trois voyageurs. Les trois départs les moins chers ont été contrôlés.'
+                             if offers else 'Aucun tarif aller-retour complet vérifiable pour ces dates. Consulte les liens de recherche.'),
+                    searched_departures=3, possible_api_requests=4)
+    with CACHE_LOCK:
+        CACHE[cache_key] = (stamp + CACHE_SECONDS, response)
+    return response

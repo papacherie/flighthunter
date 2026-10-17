@@ -9,11 +9,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      - key: AMADEUS_ENV
-        value: test
-      - key: AMADEUS_CLIENT_ID
-        sync: false
-      - key: AMADEUS_CLIENT_SECRET
+      - key: SERPAPI_API_KEY
         sync: false
       - key: APP_ACCESS_CODE
         sync: false

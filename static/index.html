@@ -45,17 +45,17 @@
       </form>
 
       <div class="connection-card"><div class="connection-icon">⌁</div><div class="connection-copy"><strong>Accès aux tarifs en direct</strong><p id="api-status">Vérification du fournisseur de prix…</p></div><button class="text-button" id="access-toggle" type="button">Configurer l’accès <span>›</span></button></div>
-      <div id="access-panel" class="access-panel" hidden><p>Si ton serveur possède des identifiants Amadeus, renseigne uniquement le code privé défini lors du déploiement. Ne saisis jamais tes identifiants Amadeus dans ce formulaire.</p><label for="access-code">Code privé de recherche</label><input type="password" id="access-code" placeholder="Code privé" autocomplete="off"><p class="privacy-note">Le code est conservé uniquement pendant cet onglet (session du navigateur).</p></div>
+      <div id="access-panel" class="access-panel" hidden><p>La clé SerpApi reste sur ton serveur Render. Renseigne ici uniquement le code privé APP_ACCESS_CODE choisi lors de la configuration du serveur.</p><label for="access-code">Code privé de recherche</label><input type="password" id="access-code" placeholder="Code privé" autocomplete="off"><p class="privacy-note">Le code est conservé uniquement pendant cet onglet (session du navigateur).</p></div>
 
       <div class="results-heading"><div><span class="section-number">02 / COMPARER</span><h2>Les offres, au bon endroit.</h2><p id="results-summary">Indiquez vos critères puis lancez la recherche.</p></div><span id="result-count" class="count">— OFFRES</span></div>
       <div id="alert" class="alert" role="status" aria-live="polite" hidden></div>
-      <div id="results" class="results"><div class="empty-state"><div class="empty-icon">✈</div><h3>Le prochain voyage commence ici.</h3><p>Les prix apparaîtront uniquement s’ils proviennent d’un fournisseur configuré. Aucun tarif fictif.</p></div></div>
+      <div id="results" class="results"><div class="empty-state"><div class="empty-icon">✈</div><h3>Le prochain voyage commence ici.</h3><p>Les offres complètes apparaissent après confirmation du vol retour via SerpApi. Aucun tarif fictif.</p></div></div>
       <div class="links-header"><div><span class="section-number">03 / EXPLORER</span><h2>Comparer sur les sites de voyages</h2><p>Recherche préremplie sur les principaux comparateurs. Les prix et les voyageurs doivent être revérifiés sur chaque site.</p></div></div>
       <div id="external-links" class="external-links"></div>
       <aside class="trust-block"><div class="trust-symbol">✓</div><div><h3>Vous gardez le contrôle.</h3><p>FlightHunter ne réserve jamais à votre place, ne demande aucune carte bancaire et n’invente aucun tarif. Les prix évoluent et peuvent différer au moment de payer. Un lien de recherche ne garantit pas de retrouver exactement une offre repérée ailleurs.</p></div></aside>
     </section>
   </main>
-  <footer class="footer"><div class="container footer-inner"><span class="brand small"><span class="brand-mark">✈</span>FlightHunter AI</span><span>Recherche de vols seulement · Réservation directement chez le vendeur</span><span>Version 1.0</span></div></footer>
+  <footer class="footer"><div class="container footer-inner"><span class="brand small"><span class="brand-mark">✈</span>FlightHunter AI</span><span>Recherche de vols seulement · Réservation directement chez le vendeur</span><span>Version 2.0 · SerpApi</span></div></footer>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

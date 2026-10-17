@@ -1,16 +1,15 @@
 openapi: 3.1.0
 info:
   title: FlightHunter AI
-  description: Rechercher et comparer les offres de vols accessibles à Amadeus, sans jamais réserver ou payer. Nécessite un accès API de production pour des prix réels.
-  version: 1.0.0
+  version: 2.0.0
+  description: Recherche de vols Google Flights via SerpApi, avec retour contrôlé, sans réservation ni garantie des prix.
 servers:
-  - url: https://REMPLACER-PAR-VOTRE-SITE.onrender.com
+  - url: https://flighthunter-ai.onrender.com
 paths:
   /api/search:
     post:
       operationId: searchFlights
-      summary: Rechercher les vols aller-retour pour plusieurs passagers
-      description: Retourne des liens de comparateurs, et des prix réels uniquement si Amadeus production est configuré. Les tarifs restent à confirmer au paiement.
+      summary: Trouver des allers-retours indicatifs pour plusieurs voyageurs
       security:
         - PrivateCode: []
       requestBody:
@@ -21,35 +20,16 @@ paths:
               type: object
               required: [origin, destination, departure, return, adults, children, stops]
               properties:
-                origin:
-                  type: string
-                  description: Code IATA 3 lettres de la ville de départ
-                  example: PAR
-                destination:
-                  type: string
-                  enum: [ALL, PVG, SHA]
-                  description: Shanghai tous aéroports, Pudong ou Hongqiao
-                departure:
-                  type: string
-                  format: date
-                return:
-                  type: string
-                  format: date
-                adults:
-                  type: integer
-                  minimum: 1
-                  maximum: 6
-                children:
-                  type: integer
-                  minimum: 0
-                  maximum: 3
-                  description: Enfants âgés de 2 à 11 ans
-                stops:
-                  type: string
-                  enum: [any, '0', '1', '2']
+                origin: {type: string, example: PAR}
+                destination: {type: string, enum: [ALL, PVG, SHA]}
+                departure: {type: string, format: date}
+                return: {type: string, format: date}
+                adults: {type: integer, minimum: 1, maximum: 6}
+                children: {type: integer, minimum: 0, maximum: 3}
+                stops: {type: string, enum: [any, '0', '1', '2']}
       responses:
         '200':
-          description: Liens de comparateurs et offres classées par prix total si fournisseur configuré
+          description: Offres triées et liens de recherche, avec prix non garantis si API configurée.
           content:
             application/json:
               schema:
