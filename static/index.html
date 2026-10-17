@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1b35">
+  <meta name="description" content="FlightHunter AI : trouvez et comparez des vols, puis réservez vous-même chez le vendeur.">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>FlightHunter AI — Votre comparateur de vols</title>
+</head>
+<body>
+  <header class="header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="FlightHunter AI, accueil"><span class="brand-mark">✈</span><span>FlightHunter<span class="brand-ai"> AI</span></span></a>
+      <div class="header-right"><span class="mini-dot"></span><span>Recherche libre · Achat chez le vendeur</span></div>
+    </div>
+  </header>
+  <main>
+    <section class="hero"><div class="container hero-grid">
+      <div class="hero-copy">
+        <span class="eyebrow"><span class="pulse"></span> LE BON VOL. SANS LE LABYRINTHE.</span>
+        <h1>Le monde est grand.<br><em>Le bon prix</em> est quelque part.</h1>
+        <p>Une recherche, plusieurs sources, les prix dans le bon ordre. Vous comparez ici. Vous réservez où vous voulez.</p>
+        <div class="hero-stats"><span><b>01</b> destination</span><i></i><span><b>02</b> aéroports de Shanghai</span><i></i><span><b>0</b> paiement ici</span></div>
+      </div>
+      <div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="flight-path"></div><div class="hero-plane">✈</div><div class="city-label city-one">PAR <small>PARIS</small></div><div class="city-label city-two">SHA <small>SHANGHAI</small></div><div class="glow"></div></div>
+    </div></section>
+
+    <section class="container work-area" id="recherche">
+      <div class="search-top"><div><span class="section-number">01 / RECHERCHE</span><h2>Votre prochain départ</h2></div><div class="live-status" id="live-status"><span class="status-dot pending"></span><span>Vérification des sources…</span></div></div>
+      <form id="flight-form" class="search-card">
+        <div class="form-grid locations">
+          <label class="input-group"><span class="label">DÉPART</span><span class="input-row"><span class="input-emoji">⌖</span><input id="origin" maxlength="3" value="PAR" autocomplete="off" required pattern="[a-zA-Z]{3}" aria-label="Code IATA de la ville de départ"><span class="input-hint">Tous aéroports de Paris</span></span></label>
+          <div class="swap" aria-hidden="true">⇄</div>
+          <label class="input-group"><span class="label">ARRIVÉE</span><span class="input-row"><span class="input-emoji">◎</span><select id="destination" aria-label="Aéroports de Shanghai"><option value="ALL">Shanghai · PVG + SHA</option><option value="PVG">Shanghai · Pudong (PVG)</option><option value="SHA">Shanghai · Hongqiao (SHA)</option></select></span></label>
+        </div>
+        <div class="form-grid detail-grid">
+          <label class="input-group"><span class="label">DÉPART LE</span><span class="input-row"><input type="date" id="departure" value="2027-07-29" required></span></label>
+          <label class="input-group"><span class="label">RETOUR LE</span><span class="input-row"><input type="date" id="return-date" value="2027-08-20" required></span></label>
+          <label class="input-group"><span class="label">ADULTES</span><span class="input-row"><select id="adults"><option value="1">1 adulte</option><option value="2" selected>2 adultes</option><option value="3">3 adultes</option><option value="4">4 adultes</option><option value="5">5 adultes</option><option value="6">6 adultes</option></select></span></label>
+          <label class="input-group"><span class="label">ENFANTS (2–11 ANS)</span><span class="input-row"><select id="children"><option value="0">0 enfant</option><option value="1" selected>1 enfant (8 ans)</option><option value="2">2 enfants*</option><option value="3">3 enfants*</option></select></span></label>
+        </div>
+        <div class="form-bottom"><div class="form-options"><label><span>ESCALES</span><select id="stops"><option value="any">Toutes les escales</option><option value="0">Vols directs seulement</option><option value="1">1 escale maximum</option><option value="2">2 escales maximum</option></select></label><span class="economy-pill">✦ Économique · EUR</span></div><button class="primary-btn" type="submit" id="search-btn">Rechercher les meilleurs vols <span>↗</span></button></div>
+        <p class="tiny-note">* Pour plusieurs enfants, l’âge exact est à revérifier sur les comparateurs et auprès du vendeur. L’API traite la catégorie enfant 2–11 ans.</p>
+      </form>
+
+      <div class="connection-card"><div class="connection-icon">⌁</div><div class="connection-copy"><strong>Accès aux tarifs en direct</strong><p id="api-status">Vérification du fournisseur de prix…</p></div><button class="text-button" id="access-toggle" type="button">Configurer l’accès <span>›</span></button></div>
+      <div id="access-panel" class="access-panel" hidden><p>Si ton serveur possède des identifiants Amadeus, renseigne uniquement le code privé défini lors du déploiement. Ne saisis jamais tes identifiants Amadeus dans ce formulaire.</p><label for="access-code">Code privé de recherche</label><input type="password" id="access-code" placeholder="Code privé" autocomplete="off"><p class="privacy-note">Le code est conservé uniquement pendant cet onglet (session du navigateur).</p></div>
+
+      <div class="results-heading"><div><span class="section-number">02 / COMPARER</span><h2>Les offres, au bon endroit.</h2><p id="results-summary">Indiquez vos critères puis lancez la recherche.</p></div><span id="result-count" class="count">— OFFRES</span></div>
+      <div id="alert" class="alert" role="status" aria-live="polite" hidden></div>
+      <div id="results" class="results"><div class="empty-state"><div class="empty-icon">✈</div><h3>Le prochain voyage commence ici.</h3><p>Les prix apparaîtront uniquement s’ils proviennent d’un fournisseur configuré. Aucun tarif fictif.</p></div></div>
+      <div class="links-header"><div><span class="section-number">03 / EXPLORER</span><h2>Comparer sur les sites de voyages</h2><p>Recherche préremplie sur les principaux comparateurs. Les prix et les voyageurs doivent être revérifiés sur chaque site.</p></div></div>
+      <div id="external-links" class="external-links"></div>
+      <aside class="trust-block"><div class="trust-symbol">✓</div><div><h3>Vous gardez le contrôle.</h3><p>FlightHunter ne réserve jamais à votre place, ne demande aucune carte bancaire et n’invente aucun tarif. Les prix évoluent et peuvent différer au moment de payer. Un lien de recherche ne garantit pas de retrouver exactement une offre repérée ailleurs.</p></div></aside>
+    </section>
+  </main>
+  <footer class="footer"><div class="container footer-inner"><span class="brand small"><span class="brand-mark">✈</span>FlightHunter AI</span><span>Recherche de vols seulement · Réservation directement chez le vendeur</span><span>Version 1.0</span></div></footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

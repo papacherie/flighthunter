@@ -1,0 +1,63 @@
+openapi: 3.1.0
+info:
+  title: FlightHunter AI
+  description: Rechercher et comparer les offres de vols accessibles à Amadeus, sans jamais réserver ou payer. Nécessite un accès API de production pour des prix réels.
+  version: 1.0.0
+servers:
+  - url: https://REMPLACER-PAR-VOTRE-SITE.onrender.com
+paths:
+  /api/search:
+    post:
+      operationId: searchFlights
+      summary: Rechercher les vols aller-retour pour plusieurs passagers
+      description: Retourne des liens de comparateurs, et des prix réels uniquement si Amadeus production est configuré. Les tarifs restent à confirmer au paiement.
+      security:
+        - PrivateCode: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin, destination, departure, return, adults, children, stops]
+              properties:
+                origin:
+                  type: string
+                  description: Code IATA 3 lettres de la ville de départ
+                  example: PAR
+                destination:
+                  type: string
+                  enum: [ALL, PVG, SHA]
+                  description: Shanghai tous aéroports, Pudong ou Hongqiao
+                departure:
+                  type: string
+                  format: date
+                return:
+                  type: string
+                  format: date
+                adults:
+                  type: integer
+                  minimum: 1
+                  maximum: 6
+                children:
+                  type: integer
+                  minimum: 0
+                  maximum: 3
+                  description: Enfants âgés de 2 à 11 ans
+                stops:
+                  type: string
+                  enum: [any, '0', '1', '2']
+      responses:
+        '200':
+          description: Liens de comparateurs et offres classées par prix total si fournisseur configuré
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+components:
+  securitySchemes:
+    PrivateCode:
+      type: apiKey
+      in: header
+      name: X-Access-Code
