@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import httpx
 import app as fh
 
-C = {'origin': 'PAR', 'destination': 'ALL', 'departure': '2027-07-29',
-     'return': '2027-08-20', 'adults': 2, 'children': 1, 'stops': '1'}
+C = {'origin': 'CDG,ORY', 'destination': 'PVG,SHA', 'departure': '2027-07-29',
+     'return': '2027-08-20', 'adults': 2, 'children_ages': [{'age': 8}], 'stops': '1'}
 
 OUTBOUND = {'flights': [
     {'departure_airport': {'id': 'CDG', 'time': '2027-07-29 10:50'},
@@ -48,7 +48,7 @@ class FlightHunterTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()['status'], 'not_configured')
         self.assertEqual(r.json()['offers'], [])
-        self.assertEqual(len(r.json()['links']), 2)
+        self.assertEqual(len(r.json()['links']), 1)
 
     def test_missing_code_blocks_api(self):
         with patch.object(fh, 'API_KEY', 'a_fake_test_key'), patch.object(fh, 'ACCESS_CODE', ''):
@@ -58,7 +58,7 @@ class FlightHunterTests(unittest.TestCase):
 
     def test_serpapi_parameters(self):
         with patch.object(fh, 'API_KEY', 'mock'):
-            p = fh.serpapi_parameters(C)
+            p = fh.serpapi_parameters(fh.validate(C))
         self.assertEqual(p['engine'], 'google_flights')
         self.assertEqual(p['departure_id'], 'CDG,ORY')
         self.assertEqual(p['arrival_id'], 'PVG,SHA')
@@ -68,7 +68,7 @@ class FlightHunterTests(unittest.TestCase):
 
     def test_return_flight_verified_and_sorted(self):
         with patch.object(fh, 'serpapi_query', return_value={'other_flights': [RETURN]}) as provider:
-            offers = fh.price_offers({'best_flights': [OUTBOUND]}, C)
+            offers = fh.price_offers({'best_flights': [OUTBOUND]}, fh.validate(C))
         self.assertEqual(len(offers), 1)
         self.assertEqual(offers[0]['price'], 2113)
         self.assertEqual(offers[0]['outbound']['stops'], 1)
@@ -97,7 +97,7 @@ class FlightHunterTests(unittest.TestCase):
         with patch.object(fh, 'serpapi_query') as fetch:
             r = self.request('POST', '/api/links', json=C)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(len(r.json()['links']), 2)
+        self.assertEqual(len(r.json()['links']), 1)
         fetch.assert_not_called()
 
     def test_logo_payload_in_priced_offer(self):
@@ -105,7 +105,7 @@ class FlightHunterTests(unittest.TestCase):
         flight = deepcopy(OUTBOUND)
         flight['flights'][0]['airline_logo'] = 'https://www.gstatic.com/flights/airline_logos/70px/GF.png'
         with patch.object(fh, 'serpapi_query', return_value={'other_flights': [RETURN]}):
-            o = fh.price_offers({'best_flights': [flight]}, C)
+            o = fh.price_offers({'best_flights': [flight]}, fh.validate(C))
         self.assertEqual(len(o), 1)
         self.assertEqual(o[0]['outbound']['airline_logos'][0]['code'], 'GF')
         self.assertEqual(o[0]['outbound']['segments'][0]['flight_number'], 'GF 12')
@@ -115,7 +115,7 @@ class FlightHunterTests(unittest.TestCase):
             {**RETURN['flights'][0], 'departure_airport': {'id': 'PVG', 'time': '2027-08-21 15:55'}},
             RETURN['flights'][1]]}
         with patch.object(fh, 'serpapi_query', return_value={'best_flights': [invalid]}):
-            offers = fh.price_offers({'other_flights': [OUTBOUND]}, C)
+            offers = fh.price_offers({'other_flights': [OUTBOUND]}, fh.validate(C))
         self.assertEqual(offers, [])
 
     def test_bad_access_code_rejected_before_provider(self):
@@ -134,6 +134,58 @@ class FlightHunterTests(unittest.TestCase):
             self.assertEqual(len(q.call_args_list), 2)
             r2 = self.request('POST', '/api/search', json=C, headers={'X-Access-Code': 'correct'})
             self.assertTrue(r2.json()['from_cache'])
+
+    def test_arbitrary_airports_and_city_ids(self):
+        other = dict(C, origin='JFK', destination='HND', children_ages=[{'age':5}, {'age':15}])
+        c = fh.validate(other)
+        self.assertEqual(c['origin'], 'JFK')
+        self.assertEqual(c['destination'], 'HND')
+        self.assertEqual(c['serpapi_adults'], 3)  # age 15 is priced in adult category
+        self.assertEqual(c['children'], 1)
+        self.assertEqual(c['travelers_count'], 4)
+        self.assertEqual(fh.validate(dict(other, destination='/m/07dfk'))['destination'], '/m/07dfk')
+        self.assertEqual(fh.serpapi_parameters(c)['arrival_id'], 'HND')
+
+    def test_babies_ages_and_seats(self):
+        c = fh.validate(dict(C, adults=2, children_ages=[{'age':0,'seat':False}, {'age':1,'seat':True}, {'age':12}, {'age':6}]))
+        p = fh.serpapi_parameters(c)
+        self.assertEqual((p['adults'],p['children'],p['infants_in_seat'],p['infants_on_lap']), (3,1,1,1))
+        self.assertEqual(c['travelers_count'], 6)
+        with self.assertRaises(ValueError):
+            fh.validate(dict(C, adults=1, children_ages=[{'age':0,'seat':False}, {'age':1,'seat':False}]))
+
+    def test_reject_invalid_airports_and_child_ages(self):
+        for airport in ('', 'ANYWHERE', '../../../passwd', 'CDG;ORY'):
+            with self.assertRaises(ValueError):
+                fh.validate(dict(C, origin=airport))
+        for ages in ([{'age':18}], [{'age':-1}], [{'age':'8'}], '8'):
+            with self.assertRaises(ValueError):
+                fh.validate(dict(C, children_ages=ages))
+        with self.assertRaises(ValueError):
+            fh.validate(dict(C, origin='JFK', destination='JFK'))
+
+    def test_airports_requires_private_code_before_spending_credit(self):
+        with patch.object(fh,'API_KEY','fake'), patch.object(fh,'ACCESS_CODE','private'), \
+             patch.object(fh.requests,'get') as getter:
+            response=self.request('GET','/api/airports?q=London')
+            self.assertEqual(response.status_code, 401)
+            getter.assert_not_called()
+
+    def test_airport_autocomplete_matches_city_airport(self):
+        body={'suggestions':[{'name':'London','id':'/m/04jpl',
+                'airports':[{'name':'Heathrow Airport','id':'LHR'}, {'name':'Gatwick','id':'LGW'}]}]}
+        class MockResponse:
+            def raise_for_status(self): pass
+            def json(self):return body
+        with patch.object(fh,'API_KEY','fake'), patch.object(fh,'ACCESS_CODE','private'), \
+             patch.object(fh.requests,'get',return_value=MockResponse()) as getter:
+            response=self.request('GET','/api/airports?q=London',headers={'X-Access-Code':'private'})
+            self.assertEqual(response.status_code,200)
+            suggestions=response.json()['suggestions']
+            self.assertEqual([x['id'] for x in suggestions],['/m/04jpl','LHR','LGW'])
+            again=self.request('GET','/api/airports?q=London',headers={'X-Access-Code':'private'})
+            self.assertTrue(again.json()['from_cache'])
+            self.assertEqual(getter.call_count,1)
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
   title: FlightHunter AI
-  version: 2.0.0
-  description: Recherche de vols Google Flights via SerpApi, avec retour contrôlé, sans réservation ni garantie des prix.
+  version: 4.0.0
+  description: Recherche mondiale aller-retour Google Flights via SerpApi, sans réservation ni garantie des prix.
 servers:
   - url: https://flighthunter-ai.onrender.com
 paths:
   /api/search:
     post:
       operationId: searchFlights
-      summary: Trouver des allers-retours indicatifs pour plusieurs voyageurs
+      summary: Comparer des allers-retours pour des aéroports du monde entier et voyageurs de tout âge
       security:
         - PrivateCode: []
       requestBody:
@@ -18,23 +18,53 @@ paths:
           application/json:
             schema:
               type: object
-              required: [origin, destination, departure, return, adults, children, stops]
+              required: [origin, destination, departure, return, adults, children_ages, stops]
               properties:
-                origin: {type: string, example: PAR}
-                destination: {type: string, enum: [ALL, PVG, SHA]}
-                departure: {type: string, format: date}
-                return: {type: string, format: date}
-                adults: {type: integer, minimum: 1, maximum: 6}
-                children: {type: integer, minimum: 0, maximum: 3}
+                origin:
+                  type: string
+                  description: Code IATA unique (CDG), liste (CDG,ORY), ou identifiant de ville Google Flights (/m/...).
+                  example: CDG
+                destination:
+                  type: string
+                  description: Code IATA ou identifiant de ville Google Flights.
+                  example: HND
+                departure: {type: string, format: date, example: '2027-07-29'}
+                return: {type: string, format: date, example: '2027-08-20'}
+                adults: {type: integer, minimum: 1, maximum: 8, description: Nombre de voyageurs majeurs (18 ans et plus).}
+                children_ages:
+                  type: array
+                  maxItems: 7
+                  description: Chaque âge à la date du départ ; les 12–17 ans sont classés par Google Flights dans les adultes tarifaires.
+                  items:
+                    type: object
+                    required: [age]
+                    properties:
+                      age: {type: integer, minimum: 0, maximum: 17}
+                      seat: {type: boolean, description: Bébé 0–1 an avec siège (true) ou sur les genoux (false) ; ignoré à partir de 2 ans.}
                 stops: {type: string, enum: [any, '0', '1', '2']}
       responses:
         '200':
-          description: Offres triées et liens de recherche, avec prix non garantis si API configurée.
+          description: Offres indicatives et liens de recherche ; prix non garantis.
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
+              schema: {type: object, additionalProperties: true}
+  /api/airports:
+    get:
+      operationId: searchAirports
+      summary: Suggestions mondiales de villes et aéroports (requête SerpApi potentiellement facturable)
+      security:
+        - PrivateCode: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: {type: string, minLength: 3, maxLength: 70}
+      responses:
+        '200':
+          description: Suggestions d'aéroports et villes, sans résultat de vol.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
 components:
   securitySchemes:
     PrivateCode:

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#121419">
   <meta name="description" content="FlightHunter AI : comparez les vols aller-retour, avec horaires, compagnies et prix pour tous vos voyageurs.">
-  <link rel="stylesheet" href="/static/style.css?v=3.0.0">
+  <link rel="stylesheet" href="/static/style.css?v=4.0.0">
   <title>FlightHunter AI — Le bon vol, au bon prix</title>
 </head>
 <body>
@@ -14,7 +14,7 @@
       <a class="brand" href="/" aria-label="FlightHunter AI — Accueil">
         <span class="brand-symbol" aria-hidden="true">✈</span>
         <span>FlightHunter<span class="brand-accent"> AI</span></span>
-        <span class="brand-version">V3</span>
+        <span class="brand-version">V4</span>
       </a>
       <div class="nav-meta"><span class="live-indicator" id="live-status"><span class="live-dot"></span>Connexion…</span><span class="nav-separator"></span><span class="nav-caption">RECHERCHE UNIQUEMENT · AUCUN PAIEMENT</span></div>
     </div>
@@ -25,7 +25,7 @@
       <div class="hero-glow" aria-hidden="true"></div>
       <div class="hero-body">
         <div class="eyebrow"><span class="eyebrow-mark"></span> FLIGHTHUNTER / MOTEUR DE VOYAGES</div>
-        <h1>Paris <span class="hero-arrow">⇄</span> Shanghai</h1>
+        <h1><span id="route-origin">Paris</span> <span class="hero-arrow">⇄</span> <span id="route-dest">Shanghai</span></h1>
         <div class="trip-meta"><span class="meta-pill">↔ Aller-retour</span><span class="meta-pill">▧ Économique</span><span class="meta-pill" id="traveler-badge">♙ 3 voyageurs</span><span class="meta-pill">€ Prix total</span></div>
         <p class="hero-subtitle">Les meilleures offres visibles, sans les ouvrir une par une. Comparez ici, réservez directement chez le vendeur.</p>
       </div>
@@ -38,18 +38,19 @@
     </section>
 
     <section class="search-section" id="recherche" aria-labelledby="search-title">
-      <div class="section-topline"><div><span class="kicker">01 / PRÉPARER LE VOYAGE</span><h2 id="search-title">Votre recherche, en un seul endroit.</h2></div><span class="micro-note">PARIS → SHANGHAI · TOUS AÉROPORTS</span></div>
+      <div class="section-topline"><div><span class="kicker">01 / PRÉPARER LE VOYAGE</span><h2 id="search-title">Votre recherche, en un seul endroit.</h2></div><span class="micro-note">MONDE ENTIER · TOUS AÉROPORTS</span></div>
       <form id="flight-form" class="search-panel">
         <div class="inputs-grid">
-          <label class="field field-origin"><span class="field-label">DÉPART DE</span><span class="field-control"><span class="field-icon">↗</span><input id="origin" value="PAR" maxlength="3" pattern="[A-Za-z]{3}" required autocomplete="off" aria-label="Code du départ, PAR pour Paris"><span class="city-caption">Paris</span></span></label>
-          <label class="field field-destination"><span class="field-label">ARRIVÉE À</span><span class="field-control"><span class="field-icon">◎</span><select id="destination" aria-label="Aéroport de Shanghai"><option value="ALL">Shanghai (tous)</option><option value="PVG">Pudong (PVG)</option><option value="SHA">Hongqiao (SHA)</option></select></span></label>
+          <div class="field field-origin airport-field"><label class="field-label" for="origin">DÉPART DE</label><span class="field-control"><span class="field-icon">↗</span><input id="origin" data-code="CDG,ORY" value="Paris · tous aéroports" required autocomplete="off" spellcheck="false" aria-label="Ville ou aéroport de départ" aria-autocomplete="list" aria-controls="origin-options" aria-expanded="false" placeholder="Ville ou code IATA"></span><div id="origin-options" class="airport-options" role="listbox" hidden></div></div>
+          <div class="field field-destination airport-field"><label class="field-label" for="destination">ARRIVÉE À</label><span class="field-control"><span class="field-icon">◎</span><input id="destination" data-code="PVG,SHA" value="Shanghai · tous aéroports" required autocomplete="off" spellcheck="false" aria-label="Ville ou aéroport d’arrivée" aria-autocomplete="list" aria-controls="destination-options" aria-expanded="false" placeholder="Ville ou code IATA"></span><div id="destination-options" class="airport-options" role="listbox" hidden></div></div>
           <label class="field"><span class="field-label">DÉPART LE</span><span class="field-control"><input type="date" id="departure" value="2027-07-29" required></span></label>
           <label class="field"><span class="field-label">RETOUR LE</span><span class="field-control"><input type="date" id="return-date" value="2027-08-20" required></span></label>
         </div>
         <div class="search-controls">
-          <div class="select-group"><label>ADULTES <select id="adults"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></label><label>ENFANTS <select id="children"><option value="0">0</option><option value="1" selected>1 (8 ans)</option><option value="2">2</option><option value="3">3</option></select></label><label>ESCALES <select id="stops"><option value="any">Toutes</option><option value="0">Direct uniquement</option><option value="1">1 maximum</option><option value="2">2 maximum</option></select></label></div>
+          <div class="select-group"><label>ADULTES (18+)<select id="adults"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></label><label>ENFANTS (0–17)<select id="children"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option></select></label><label>ESCALES <select id="stops"><option value="any">Toutes</option><option value="0">Direct uniquement</option><option value="1">1 maximum</option><option value="2">2 maximum</option></select></label></div>
           <button class="search-button" type="submit" id="search-btn"><span class="search-button-icon">⌕</span><span id="search-button-text">Comparer les vols</span><span class="search-button-arrow">→</span></button>
         </div>
+        <div class="ages-wrap"><div class="ages-heading"><strong>Âges des enfants</strong><span>Âge au départ · un réglage par enfant</span></div><div id="children-ages" class="ages-grid"></div><p class="ages-hint">0–1 an : bébé sur les genoux ou avec son propre siège. 2–11 ans : enfant. 12–17 ans : tarif catégorie adulte dans Google Flights ; conditions mineur à vérifier auprès de la compagnie.</p></div>
       </form>
       <div class="connection-row">
         <div class="connection-copy"><span class="connection-led"></span><span id="api-status">Vérification du moteur de recherche…</span></div>
@@ -73,7 +74,7 @@
 
     <section class="trust-panel"><div class="trust-graphic">◈</div><div><strong>Tu gardes toujours le contrôle.</strong><p>FlightHunter ne demande aucune carte bancaire et ne réserve aucun billet. Le meilleur prix n’est confirmé qu'au moment de la réservation chez le vendeur.</p></div><span class="trust-seal">AUCUN PAIEMENT ICI</span></section>
   </main>
-  <footer class="site-footer"><div class="shell"><span>✈ &nbsp; FlightHunter <b>AI</b></span><span>Google Flights via SerpApi · Design FlightHunter 3.0</span><span>Fait pour chercher, pas pour réserver.</span></div></footer>
-  <script src="/static/app.js?v=3.0.0" defer></script>
+  <footer class="site-footer"><div class="shell"><span>✈ &nbsp; FlightHunter <b>AI</b></span><span>Google Flights via SerpApi · Design FlightHunter 4.0</span><span>Fait pour chercher, pas pour réserver.</span></div></footer>
+  <script src="/static/app.js?v=4.0.0" defer></script>
 </body>
 </html>

@@ -1,25 +1,33 @@
-# FlightHunter AI — Version 3.0 « Dark Flights »
+# FlightHunter AI 4.0 — Aéroports mondiaux et âges des voyageurs
 
-Nouvelle interface inspirée de la **lisibilité** de Google Flights (sans copier son identité) : fond anthracite, cartes d’itinéraires aller/retour, horaires, correspondances, prix totaux et détails dépliables.
+**Version à publier sur ton dépôt GitHub `papacherie/flighthunter`**. Elle prolonge le design sombre et les logos des compagnies de la v3. L'application n'effectue aucune réservation.
 
-## Ce qui change
+## Nouvelles fonctions
 
-- **Logos réels des compagnies**, automatiquement lus dans le champ `flights[].airline_logo` renvoyé par SerpApi (Google Flights). En l'absence du lien, recherche du logo par code de compagnie dans la bibliothèque publique Google Flights (`https://www.gstatic.com/flights/airline_logos/70px/<IATA>.png`). Si inaccessible, affichage automatique des initiales.
-- Affichage des compagnies présentes à l’aller et au retour, au maximum trois logos sur la carte.
-- Détail des segments de vol, numéros de vol, correspondances, horaires et appareils lorsque l’API les fournit.
-- Cards premium sombres, couleur spécifique pour la meilleure offre, indication du budget cible de 2 500 € pour l’ensemble des voyageurs, liens vers les recherches Google Flights.
-- Responsive Mac / iPhone, pas de débordement horizontal sur écran mobile.
-- **Aucune recherche automatique au chargement** : la saisie du code privé précède l'appel SerpApi. Les liens simples sont générés via `/api/links`, sans consommer aucun crédit SerpApi.
-- Protection : seuls les liens logos HTTPS `www.gstatic.com/flights/airline_logos/*.png` sont exposés au navigateur, qui affiche une alternative lorsque l'image est absente.
+- Départ et arrivée **dans le monde entier** : entre directement un **code d'aéroport IATA à 3 lettres** (ex. `JFK`, `LHR`, `CDG`, `PVG`), ou saisis le nom d'une ville/aéroport et choisis une suggestion. Les suggestions sont obtenues avec **SerpApi Google Flights Autocomplete** (qui peut consommer un crédit). Un choix « ville, tous aéroports » passe un identifiant Google Knowledge Graph à Google Flights lorsque disponible.
+- **Voyageurs personnalisables** : 1 à 8 adultes majeurs et 0 à 7 mineurs, **maximum 8 voyageurs au total**. Chaque enfant possède un champ **âge au départ (0 à 17 ans)**.
+- Pour les **0–1 an**, choix entre *bébé sur les genoux* et *bébé avec siège*. Au maximum un bébé sur les genoux par adulte.
+- Tarification transmise à SerpApi : **12–17 ans comptés comme adultes** (classification Google Flights), 2–11 ans enfants, 0–1 an `infants_in_seat` ou `infants_on_lap`. **SerpApi ne reçoit pas chaque âge séparément**, uniquement ces catégories et leurs nombres. Les tarifs/conditions détaillés propres à l'âge exact doivent être confirmés auprès de la compagnie.
+- Conservation des cartes sombre aller/retour, escales, vrais logos s'ils sont disponibles, prix totaux par groupe et liens de comparaison. L'affichage des tarifs se limite aux retours réellement validés par une seconde recherche SerpApi. **Les prix ne sont pas garantis chez le vendeur.**
+- Économies de crédits : suggestions uniquement **après saisie du code privé**, avec temporisation côté navigateur, limitation de fréquence et cache 12 h côté serveur. Les recherches de vols sont mises en cache pendant 15 minutes.
 
-## Installation (GitHub → Render)
+## Actualiser GitHub et Render
 
-1. Décompresser l’archive livrée et envoyer **le contenu de ce dossier** (pas le ZIP) à la racine du dépôt GitHub `papacherie/flighthunter`. Remplacer les fichiers `app.py`, `static/index.html`, `static/style.css`, `static/app.js`, `tests/test_app.py`, `README.md`. Aucun secret ne doit être commité.
-2. Valider avec **Commit changes**. Le service Render `flighthunter-ai` est déjà configuré en déploiement automatique depuis la branche `main` et doit redéployer sans nouvelle intervention.
-3. Après le statut **Live**, ouvrir `https://flighthunter-ai.onrender.com/` puis rafraîchir la page. Les fichiers CSS/JS ont des URL versionnées pour éviter de conserver le mauvais style en cache.
-4. Saisir dans le volet **Code privé** la valeur de `APP_ACCESS_CODE` déjà stockée sur Render, puis cliquer sur **Comparer les vols**.
+1. Décompresser cette archive, puis ouvrir le dépôt : <https://github.com/papacherie/flighthunter>.
+2. Sur GitHub, remplacer les fichiers déjà présents par leurs nouveaux contenus : `app.py`, `static/index.html`, `static/style.css`, `static/app.js`, `tests/test_app.py`, `README.md`, `openapi-chatgpt.yaml`. Les fichiers doivent rester **dans les mêmes chemins**, pas à l'intérieur d'un dossier `FlightHunter_v4` supplémentaire. GitHub peut nécessiter de modifier les fichiers existants un à un via l'icône crayon ; l'interface de dépôt ne prend pas toujours en charge le remplacement par glisser-déposer.
+3. Valider les modifications (**Commit changes**). Render redéploie automatiquement depuis la branche `main`. Attendre **Live**.
+4. Ouvrir <https://flighthunter-ai.onrender.com/>. Les fichiers CSS/JS sont versionnés `v=4.0.0` pour éviter un vieux cache navigateur.
 
-Configuration inchangée sur Render : `SERPAPI_API_KEY` et `APP_ACCESS_CODE`. Conserver ces valeurs uniquement côté serveur, jamais dans GitHub ou dans une capture. Mode Render Python avec `pip install -r requirements.txt` puis `uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1`.
+**Secrets :** conserver sur Render les variables existantes `SERPAPI_API_KEY` et `APP_ACCESS_CODE`. Aucun secret n'est inclus dans les fichiers. Ne pas les transmettre en conversation ni les publier sur GitHub.
+
+## Utilisation
+
+1. Entrer le **code privé** dans le volet 🔒 Code privé : ce n'est **pas** la clé SerpApi.
+2. Écrire une ville ou un aéroport (ex. « Tokyo », « New York », « Heathrow »). Choisir un aéroport ou une ville dans le menu. Pour aller vite et ne pas consommer de crédit de suggestion, écrire directement le code IATA en lettres majuscules (`HND`, `JFK`...).
+3. Choisir dates et escales, adultes majeurs et nombre d'enfants ; renseigner **l'âge de chaque enfant**. Pour les bébés de moins de 2 ans, choisir la place.
+4. Lancer la recherche et vérifier les prix et âges chez le vendeur.
+
+**Limites :** Google Flights/SerpApi ne garantissent pas tous les vols ni la disponibilité finale. Les options de réservation ne sont pas synchronisées avec le prix de la carte. Certaines villes ou aéroports peuvent ne pas être présents dans les suggestions du fournisseur ; un code IATA valide reste saisissable. Les liens vers KAYAK et Skyscanner sont proposés seulement lorsque départ et arrivée sont des aéroports IATA uniques, et doivent être revérifiés avant paiement ; le lien Google Flights demeure un lien de *recherche*.
 
 ## Tests
 
@@ -29,13 +37,4 @@ python -m unittest discover -s tests -v
 node --check static/app.js
 ```
 
-Le projet a été testé avec **12 tests backend** et une vérification en navigateur Chromium sur formats ordinateur et mobile (données de démonstration seulement pour les captures de prévisualisation). Aucune recherche réelle n'a été déclenchée pendant les tests visuels, donc aucun crédit SerpApi dépensé.
-
-## Limites importantes
-
-- Les logos proviennent d’une source externe et ne sont affichés que lorsque disponibles. L’intégration ne garantit pas une identité visuelle pour chaque compagnie ni la pérennité du lien.
-- Les prix viennent des recherches Google Flights via SerpApi ; **ils ne sont pas garantis** au stade du paiement et peuvent varier selon le vendeur, les bagages, la disponibilité et les voyageurs.
-- Le moteur conserve la politique de version 2 : au maximum 3 départs sont inspectés par requêtes de retour (environ 4 appels SerpApi par recherche non mise en cache).
-- Le bouton vers Google Flights ouvre une **recherche préremplie**, pas l’option de réservation exacte déjà sélectionnée. Afficher les logos des agences/vendeurs et leurs prix de réservation exigerait des appels supplémentaires à l'API de réservation lorsque celle-ci expose les options.
-- Aucun achat, paiement, carte bancaire ou réservation automatique.
-- Les prix présentés dans **les captures de prévisualisation** sont des valeurs de démonstration, non des offres fraîchement vérifiées.
+Résultats : **17 tests backend** réussis, JavaScript sans erreur de syntaxe, tests navigateur Chromium des formulaires desktop (1440 px) et mobile (390 px) sans débordement horizontal. Les tests d'interface ne consomment aucun crédit SerpApi et n'utilisent aucune donnée de prix fictive sur le site réel. L'endpoint d'autocomplétion a été testé avec une réponse simulée ; le service réel devra être validé sur Render après publication.

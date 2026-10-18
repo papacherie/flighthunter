@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
-app = FastAPI(title='FlightHunter AI', version='3.0.0', docs_url=None, redoc_url=None)
+app = FastAPI(title='FlightHunter AI', version='4.0.0', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 API_KEY = os.environ.get('SERPAPI_API_KEY', '').strip()
@@ -34,6 +34,10 @@ RATE: dict[str, float] = {}
 CACHE_LOCK = threading.RLock()
 CACHE: dict[str, tuple[float, dict]] = {}
 CACHE_SECONDS = 15 * 60
+AIRPORT_CACHE: dict[str, tuple[float, list[dict]]] = {}
+AIRPORT_LOCK = threading.RLock()
+AUTOCOMPLETE_RATE: dict[str, float] = {}
+
 
 
 def is_ready() -> bool:
@@ -41,37 +45,67 @@ def is_ready() -> bool:
     return bool(API_KEY and ACCESS_CODE)
 
 
+def normalize_location(value: object) -> str:
+    """Google Flights accepts IATA airport lists or Google location knowledge IDs."""
+    location = str(value or '').strip().upper() if not str(value or '').startswith(('/m/', '/g/')) else str(value).strip()
+    if re.fullmatch(r'[A-Z]{3}(?:,[A-Z]{3}){0,5}', location):
+        return location
+    if re.fullmatch(r'/(?:m|g)/[A-Za-z0-9_\-]{2,70}', location):
+        return location
+    raise ValueError('Sélectionne une ville/aéroport dans les suggestions, ou indique un code IATA (ex. CDG).')
+
+
 def validate(body: dict) -> dict:
     if not isinstance(body, dict):
-        raise ValueError('Paramètres de recherche invalides.')
-    origin = str(body.get('origin', 'PAR')).strip().upper()
-    dest = str(body.get('destination', 'ALL')).strip().upper()
+        raise ValueError('Paramètres invalides.')
+    origin = normalize_location(body.get('origin', 'CDG,ORY'))
+    dest = normalize_location(body.get('destination', 'PVG,SHA'))
+    if origin == dest or (len(origin) == len(dest) == 3 and origin == dest):
+        raise ValueError('Le départ et l’arrivée doivent être différents.')
     start, end = str(body.get('departure', '')).strip(), str(body.get('return', '')).strip()
     try:
-        adults = int(body.get('adults', 2))
-        children = int(body.get('children', 1))
-    except (ValueError, TypeError) as exc:
-        raise ValueError('Nombre de voyageurs invalide.') from exc
-    stops = str(body.get('stops', 'any')).strip()
-    if not re.fullmatch(r'[A-Z]{3}', origin):
-        raise ValueError('Le départ doit être un code IATA à trois lettres.')
-    if dest not in ('ALL', 'PVG', 'SHA'):
-        raise ValueError('Aéroport de Shanghai invalide.')
+        ds, dr = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Dates incorrectes.') from exc
+    if ds < dt.date.today() or dr <= ds:
+        raise ValueError('Le départ doit être à venir, et le retour après le départ.')
+    if dr > dt.date.today() + dt.timedelta(days=365):
+        raise ValueError('La date dépasse le calendrier de réservation habituel de 365 jours.')
     try:
-        departure = dt.date.fromisoformat(start)
-        arrival = dt.date.fromisoformat(end)
-    except ValueError as exc:
-        raise ValueError('Dates invalides.') from exc
-    if departure < dt.date.today() or arrival <= departure:
-        raise ValueError('Le départ doit être futur et le retour après le départ.')
-    if arrival > dt.date.today() + dt.timedelta(days=365):
-        raise ValueError('Les dates sont au-delà des calendriers courants (365 jours).')
-    if not (1 <= adults <= 6 and 0 <= children <= 3 and adults + children <= 8):
-        raise ValueError('Voyageurs incorrects : 1 à 8, avec au moins un adulte.')
+        adults = int(body.get('adults', 2))
+    except (ValueError, TypeError) as exc:
+        raise ValueError('Nombre d’adultes incorrect.') from exc
+    children = body.get('children_ages', [{'age': 8}])
+    if not isinstance(children, list) or len(children) > 7:
+        raise ValueError('Liste des enfants incorrecte (7 maximum).')
+    normalized_children = []
+    for child in children:
+        if not isinstance(child, dict) or type(child.get('age')) is not int:
+            raise ValueError('Indique un âge entier pour chaque enfant.')
+        age = child['age']
+        if not (0 <= age <= 17):
+            raise ValueError('L’âge d’un enfant doit être entre 0 et 17 ans au départ.')
+        seat = bool(child.get('seat', False)) if age < 2 else True
+        if age < 2 and type(child.get('seat', False)) is not bool:
+            raise ValueError('Indique si le bébé occupe un siège.')
+        normalized_children.append({'age': age, 'seat': seat})
+    total = adults + len(normalized_children)
+    infants_lap = sum(x['age'] < 2 and not x['seat'] for x in normalized_children)
+    infants_seat = sum(x['age'] < 2 and x['seat'] for x in normalized_children)
+    children_count = sum(2 <= x['age'] <= 11 for x in normalized_children)
+    teens = sum(12 <= x['age'] <= 17 for x in normalized_children)
+    if not 1 <= adults <= 8 or total > 8:
+        raise ValueError('Il faut au moins un adulte majeur, et 8 voyageurs maximum.')
+    if infants_lap > adults:
+        raise ValueError('Un adulte ne peut accompagner qu’un bébé sans siège sur cette recherche.')
+    stops = str(body.get('stops', 'any'))
     if stops not in ('any', '0', '1', '2'):
-        raise ValueError('Nombre d’escales invalide.')
+        raise ValueError('Nombre d’escales incorrect.')
     return {'origin': origin, 'destination': dest, 'departure': start, 'return': end,
-            'adults': adults, 'children': children, 'stops': stops}
+            'adults': adults, 'children_ages': normalized_children,
+            'children': children_count, 'infants_in_seat': infants_seat,
+            'infants_on_lap': infants_lap, 'serpapi_adults': adults + teens,
+            'travelers_count': total, 'stops': stops}
 
 
 def flight_google_link(origin: str, dest: str, outbound: str, inbound: str, adults: int, children: int) -> str:
@@ -83,28 +117,30 @@ def flight_google_link(origin: str, dest: str, outbound: str, inbound: str, adul
 
 
 def search_links(c: dict) -> list[dict]:
-    result = []
-    for dest in (('PVG', 'SHA') if c['destination'] == 'ALL' else (c['destination'],)):
-        a, b = c['departure'], c['return']
-        result.append({
-            'destination': dest,
-            'google': flight_google_link(c['origin'], dest, a, b, c['adults'], c['children']),
-            'kayak': 'https://www.kayak.fr/flights/' + c['origin'] + '-' + dest + '/' + a + '/' + b + '?' + urlencode({
-                'sort': 'price_a', 'adults': c['adults'], 'children': c['children'], 'childages': ','.join('8' for _ in range(c['children']))}),
-            'skyscanner': 'https://www.skyscanner.fr/transport/vols/' + c['origin'].lower() + '/' + dest.lower() + '/' + a[2:].replace('-', '') + '/' + b[2:].replace('-', '') + '/?' + urlencode({
-                'adultsv2': c['adults'], 'childrenv2': ','.join('8' for _ in range(c['children'])), 'cabinclass': 'economy', 'rtn': 1})
-        })
-    return result
+    a, b = c['departure'], c['return']
+    origin, dest = c['origin'], c['destination']
+    google = 'https://www.google.com/travel/flights?' + urlencode({
+        'hl': 'fr', 'curr': 'EUR', 'q': f'Flights from {origin} to {dest} on {a} through {b}'})
+    links = {'origin': origin, 'destination': dest, 'google': google,
+             'note': 'Les âges, les bébés et les voyageurs sont à revérifier sur les comparateurs.'}
+    if re.fullmatch('[A-Z]{3}', origin) and re.fullmatch('[A-Z]{3}', dest):
+        links['kayak'] = ('https://www.kayak.fr/flights/' + origin + '-' + dest + '/' + a + '/' + b + '?' + urlencode({
+            'sort': 'price_a', 'adults': c['adults'], 'children': len(c['children_ages']),
+            'childages': ','.join(str(x['age']) for x in c['children_ages'])}))
+        links['skyscanner'] = ('https://www.skyscanner.fr/transport/vols/' + origin.lower() + '/' + dest.lower() + '/' + a[2:].replace('-', '') + '/' + b[2:].replace('-', '') + '/?' + urlencode({
+            'adultsv2': c['adults'], 'childrenv2': ','.join(str(x['age']) for x in c['children_ages']),
+            'cabinclass': 'economy', 'rtn': 1}))
+    return [links]
 
 
 def serpapi_parameters(c: dict, departure_token: str | None = None) -> dict:
     # Stops are different from FlightHunter's filter: 0=any, 1=nonstop, 2=<=1, 3=<=2.
     stops = {'any': 0, '0': 1, '1': 2, '2': 3}[c['stops']]
     params = {'engine': 'google_flights', 'api_key': API_KEY, 'type': 1,
-              'departure_id': 'CDG,ORY' if c['origin'] == 'PAR' else c['origin'],
-              'arrival_id': 'PVG,SHA' if c['destination'] == 'ALL' else c['destination'],
+              'departure_id': c['origin'], 'arrival_id': c['destination'],
               'outbound_date': c['departure'], 'return_date': c['return'],
-              'adults': c['adults'], 'children': c['children'], 'travel_class': 1,
+              'adults': c['serpapi_adults'], 'children': c['children'],
+              'infants_in_seat': c['infants_in_seat'], 'infants_on_lap': c['infants_on_lap'], 'travel_class': 1,
               'currency': 'EUR', 'gl': 'fr', 'hl': 'fr', 'sort_by': 2,
               'stops': stops, 'no_cache': 'false'}
     if departure_token:
@@ -213,15 +249,19 @@ def leg_info(offer: dict) -> dict:
 
 
 def trip_matches_leg(leg: dict, c: dict, outbound: bool) -> bool:
+    """For a city KGMID, SerpApi does the filtering; validate date and direction.
+
+    For IATA lists check the actual segments' airports against the chosen choices.
+    """
     if not leg:
         return False
-    if outbound:
-        airport = ('CDG', 'ORY') if c['origin'] == 'PAR' else (c['origin'],)
-        dest = ('PVG', 'SHA') if c['destination'] == 'ALL' else (c['destination'],)
-        return leg.get('from') in airport and leg.get('to') in dest and str(leg.get('departure', '')).startswith(c['departure'])
-    airport = ('CDG', 'ORY') if c['origin'] == 'PAR' else (c['origin'],)
-    dest = ('PVG', 'SHA') if c['destination'] == 'ALL' else (c['destination'],)
-    return leg.get('from') in dest and leg.get('to') in airport and str(leg.get('departure', '')).startswith(c['return'])
+    src = c['origin'] if outbound else c['destination']
+    dest = c['destination'] if outbound else c['origin']
+    date = c['departure'] if outbound else c['return']
+    if not str(leg.get('departure', '')).startswith(date):
+        return False
+    return all((x.startswith(('/m/', '/g/')) or leg.get(key) in x.split(','))
+               for x, key in ((src, 'from'), (dest, 'to')))
 
 
 def price_offers(data: dict, c: dict) -> list[dict]:
@@ -265,7 +305,7 @@ def price_offers(data: dict, c: dict) -> list[dict]:
                            'outbound': out, 'inbound': back, 'destination': dest,
                            'baggage': 'À vérifier lors de la réservation',
                            'price_status': 'Prix affiché, non garanti chez le vendeur',
-                           'booking_link': flight_google_link(c['origin'], dest, c['departure'], c['return'], c['adults'], c['children'])})
+                           'booking_link': search_links(c)[0]['google']})
             break  # cheapest valid return for this specific outbound itinerary
     return sorted(result, key=lambda offer: offer['price'])
 
@@ -308,6 +348,59 @@ def public_links(body: dict):
     except (ValueError, TypeError, OverflowError) as exc:
         return JSONResponse({'error': str(exc)}, status_code=400)
     return {'criteria': criteria, 'links': search_links(criteria)}
+
+
+@app.get('/api/airports')
+def airport_suggestions(q: str, request: Request):
+    # Avoid spending API credits unless there is a deliberate, authenticated query.
+    if not is_ready() or not secrets.compare_digest(request.headers.get('X-Access-Code', ''), ACCESS_CODE):
+        return JSONResponse({'error': 'Saisis ton code privé avant d’afficher les suggestions.'}, status_code=401)
+    query = q.strip()
+    if not (3 <= len(query) <= 70) or not re.fullmatch(r"[\w\s\-À-ÿ']{3,70}", query, re.UNICODE):
+        return JSONResponse({'error': 'Saisis au moins 3 caractères pour rechercher un aéroport.'}, status_code=400)
+    key = query.casefold()
+    now = time.monotonic()
+    with AIRPORT_LOCK:
+        cached = AIRPORT_CACHE.get(key)
+        if cached and cached[0] > now:
+            return {'suggestions': cached[1], 'from_cache': True}
+        ip = request.client.host if request.client else 'unknown'
+        if now - AUTOCOMPLETE_RATE.get(ip, -1e10) < 2:
+            return JSONResponse({'error': 'Attends 2 secondes avant une autre recherche.'}, status_code=429)
+        AUTOCOMPLETE_RATE[ip] = now
+    try:
+        r = requests.get(SERPAPI_URL, params={'engine': 'google_flights_autocomplete',
+                         'q': query, 'gl': 'fr', 'hl': 'fr', 'api_key': API_KEY,
+                         'exclude_regions': 'true'}, timeout=18)
+        r.raise_for_status()
+        result = r.json()
+        if not isinstance(result, dict) or result.get('error'):
+            raise ValueError('Recherche d’aéroports indisponible.')
+    except (requests.RequestException, ValueError):
+        return JSONResponse({'error': 'Suggestions indisponibles : utilise un code IATA (ex. CDG).'}, status_code=502)
+    suggestions = []
+    seen = set()
+    for entry in (result.get('suggestions') or [])[:12]:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get('name') or '').strip()[:110]
+        city_id = str(entry.get('id') or '')
+        if re.fullmatch(r'/(?:m|g)/[A-Za-z0-9_\-]{2,70}', city_id) and city_id not in seen:
+            suggestions.append({'label': name + ' · tous aéroports', 'id': city_id, 'type': 'city'})
+            seen.add(city_id)
+        for airport in (entry.get('airports') or [])[:9]:
+            code = str(airport.get('id') or '').upper()
+            if re.fullmatch('[A-Z]{3}', code) and code not in seen:
+                label = str(airport.get('name') or name)[:95] + ' · ' + code
+                suggestions.append({'label': label, 'id': code, 'type': 'airport'})
+                seen.add(code)
+        if len(suggestions) >= 15:
+            break
+    with AIRPORT_LOCK:
+        if len(AIRPORT_CACHE) > 400:
+            AIRPORT_CACHE.clear()
+        AIRPORT_CACHE[key] = (now + 12 * 3600, suggestions[:15])
+    return {'suggestions': suggestions[:15], 'from_cache': False}
 
 
 @app.post('/api/search')
