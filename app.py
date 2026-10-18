@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
-app = FastAPI(title='FlightHunter AI', version='4.0.0', docs_url=None, redoc_url=None)
+app = FastAPI(title='FlightHunter AI', version='5.0.0', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 API_KEY = os.environ.get('SERPAPI_API_KEY', '').strip()

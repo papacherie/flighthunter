@@ -38,6 +38,14 @@ class FlightHunterTests(unittest.TestCase):
         fh.CACHE.clear()
         fh.RATE.clear()
 
+    def test_v5_ui_assets_and_logo_csp(self):
+        resp = self.request('GET', '/')
+        self.assertIn('v=5.0.0', resp.text)
+        self.assertIn('id="passenger-popover"', resp.text)
+        self.assertIn('id="calendar-panel"', resp.text)
+        self.assertNotIn('SERPAPI_API_KEY=', resp.text)
+        self.assertIn('https://www.gstatic.com', resp.headers['content-security-policy'])
+
     def test_health(self):
         self.assertEqual(self.request('GET', '/health').json()['ok'], True)
         self.assertEqual(self.request('GET', '/').status_code, 200)
