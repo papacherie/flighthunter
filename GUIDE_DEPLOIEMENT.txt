@@ -1,0 +1,14 @@
+FLIGHTHUNTER AI V6 — INSTALLATION (sans changer les clés Render)
+
+1) Décompresser FlightHunter_AI_v6_Clair_Sombre.zip.
+2) Ouvrir https://github.com/papacherie/flighthunter
+3) Add file > Upload files : sélectionner le CONTENU du dossier décompressé (app.py, requirements.txt, static/, tests/, etc.). Les fichiers doivent être à la racine du dépôt, pas dans un sous-dossier.
+4) Commit changes. Render redéploie automatiquement le projet.
+5) Ouvrir https://flighthunter-ai.onrender.com/ et vérifier V6.
+6) Cliquer « Code privé », entrer une fois APP_ACCESS_CODE défini dans Render. Votre navigateur reçoit un cookie HttpOnly Secure valable 30 jours ; pas besoin de recoller la clé SerpApi.
+
+RECHERCHE DEPUIS CHATGPT : une connexion sécurisée unique via profil navigateur doit être autorisée pour cet assistant ; le déploiement GitHub seul ne connecte pas la conversation au compte privé. Après autorisation et enregistrement du profil, l'assistant pourra utiliser le navigateur connecté dans les conversations suivantes, sans demander le code à chaque recherche (sous réserve de validité du profil et de la session).
+
+6 OFFRES : vise 6 vols aller-retour vérifiés ou plus lorsqu'ils existent. Si le fournisseur ne retourne que 2 ou 3 vols, FlightHunter n'invente pas de prix. Jusqu'à 9 appels API par nouvelle recherche ; changer d'escales déclenche potentiellement de nouveaux appels. 250 recherches SerpApi gratuites mensuelles ne représentent donc pas 250 recherches complètes.
+
+LIENS COMPAGNIES : uniquement lorsqu'un itinéraire contient le token de réservation de SerpApi et que Google Flights identifie une option compagnie exploitable. Sinon, retour vers la recherche Google Flights ; le lien ne garantit pas le prix ni le préremplissage de tous les voyageurs.

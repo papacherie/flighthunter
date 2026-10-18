@@ -40,7 +40,7 @@ class FlightHunterTests(unittest.TestCase):
 
     def test_v5_ui_assets_and_logo_csp(self):
         resp = self.request('GET', '/')
-        self.assertIn('v=5.0.0', resp.text)
+        self.assertIn('v=6.0.0', resp.text)
         self.assertIn('id="passenger-popover"', resp.text)
         self.assertIn('id="calendar-panel"', resp.text)
         self.assertNotIn('SERPAPI_API_KEY=', resp.text)
@@ -194,6 +194,91 @@ class FlightHunterTests(unittest.TestCase):
             again=self.request('GET','/api/airports?q=London',headers={'X-Access-Code':'private'})
             self.assertTrue(again.json()['from_cache'])
             self.assertEqual(getter.call_count,1)
+
+    def test_v6_blank_search_and_toggle_assets(self):
+        r=self.request('GET','/')
+        self.assertEqual(r.status_code,200)
+        body=r.text
+        for needle in ('v=6.0.0','id="theme-toggle"','id="origin"','id="destination"', 'id="departure"', 'id="return-date"'):
+            self.assertIn(needle,body)
+        self.assertNotIn('data-code="CDG,ORY"',body)
+        self.assertNotIn('value="2027-07-29"',body)
+
+    def test_v6_six_real_return_combinations(self):
+        import copy
+        data=copy.deepcopy(OUTBOUND)
+        data['departure_token']='outbound6token'
+        candidates=[]
+        for i in range(6):
+            flight=copy.deepcopy(RETURN)
+            flight['price']=2100+i*25
+            flight['booking_token']='booking'+str(i)
+            flight['flights'][0]['flight_number']='GF '+str(120+i)
+            flight['flights'][0]['departure_airport']['time']=f'2027-08-20 {10+i:02d}:55'
+            candidates.append(flight)
+        with patch.object(fh,'serpapi_query',return_value={'other_flights': candidates}) as provider:
+            matches=fh.price_offers({'other_flights':[data]},fh.validate(C))
+        self.assertEqual(len(matches),6)
+        self.assertEqual([x['price'] for x in matches],[2100+i*25 for i in range(6)])
+        self.assertTrue(all(x['direct_booking_available'] for x in matches))
+        self.assertEqual(provider.call_count,1)
+        self.assertTrue(all(x['id'] in fh.BOOKING_REFS for x in matches))
+
+    def test_v6_no_invented_six_if_only_one_return(self):
+        with patch.object(fh,'serpapi_query',return_value={'other_flights':[RETURN]}):
+            matches=fh.price_offers({'other_flights':[OUTBOUND]},fh.validate(C))
+        self.assertEqual(len(matches),1)
+
+    def test_v6_airline_endpoint_requires_code_and_valid_id(self):
+        with patch.object(fh,'API_KEY','mock'),patch.object(fh,'ACCESS_CODE','code'):
+            r=self.request('POST','/api/airline-link',json={'offer_id':'whatever'})
+            self.assertEqual(r.status_code,401)
+            r=self.request('POST','/api/airline-link',json={'offer_id':'whatever'},headers={'X-Access-Code':'code'})
+            self.assertEqual(r.status_code,400)
+            r=self.request('POST','/api/airline-link',json={'offer_id':'a'*24},headers={'X-Access-Code':'code'})
+            self.assertEqual(r.status_code,404)
+
+    def test_v6_booking_provider_fallback(self):
+        fid='b'*24
+        fh.BOOKING_REFS[fid]=(fh.time.monotonic()+900,'booking_token','Gulf Air','https://www.google.com/travel/flights?hl=fr')
+        with patch.object(fh,'API_KEY','mock'),patch.object(fh,'ACCESS_CODE','code'),patch.object(fh,'booking_options_for_token',return_value={'booking_options':[]}):
+            r=self.request('POST','/api/airline-link',json={'offer_id':fid},headers={'X-Access-Code':'code'})
+        self.assertEqual(r.status_code,200)
+        self.assertEqual(r.json()['status'],'fallback')
+        self.assertIn('www.google.com',r.json()['url'])
+
+    def test_v6_rejects_untrusted_booking_request(self):
+        self.assertIsNone(fh.google_booking_redirect({'url':'http://127.0.0.1/admin','post_data':'a=b'}))
+        self.assertIsNone(fh.google_booking_redirect({'url':'https://evil.com','post_data':'x'}))
+        self.assertIsNone(fh.google_booking_redirect({'url':'https://www.google.com/travel/clk/f'}))
+        self.assertEqual(fh.google_booking_redirect({'url':'https://www.google.com/travel/clk/f?token=abc'}),'https://www.google.com/travel/clk/f?token=abc')
+
+    def test_v6_session_login_and_cookie_auth(self):
+        with patch.object(fh,'API_KEY','api-test'), patch.object(fh,'ACCESS_CODE','correct-code'):
+            denied=self.request('POST','/api/session/login',json={'code':'wrong'})
+            self.assertEqual(denied.status_code,401)
+            allowed=self.request('POST','/api/session/login',json={'code':'correct-code'})
+            self.assertEqual(allowed.status_code,200)
+            cookie=allowed.cookies.get(fh.SESSION_COOKIE)
+            self.assertTrue(cookie)
+            self.assertIn('HttpOnly',allowed.headers['set-cookie'])
+            self.assertIn('Secure',allowed.headers['set-cookie'])
+            status=self.request('GET','/api/status',headers={'Cookie':fh.SESSION_COOKIE+'='+cookie})
+            self.assertTrue(status.json()['authenticated'])
+            bad=self.request('GET','/api/status',headers={'Cookie':fh.SESSION_COOKIE+'='+cookie+'x'})
+            self.assertFalse(bad.json()['authenticated'])
+            fh.CACHE.clear();fh.RATE.clear()
+            with patch.object(fh,'serpapi_query',side_effect=[{'best_flights':[OUTBOUND]},{'other_flights':[RETURN]}]):
+                r=self.request('POST','/api/search',json=C,headers={'Cookie':fh.SESSION_COOKIE+'='+cookie})
+            self.assertEqual(r.status_code,200)
+            self.assertEqual(r.json()['count'],1)
+
+    def test_v6_no_session_when_code_rotated(self):
+        with patch.object(fh,'API_KEY','test-key'),patch.object(fh,'ACCESS_CODE','one'):
+            token=fh.make_session_cookie()
+        with patch.object(fh,'API_KEY','test-key'),patch.object(fh,'ACCESS_CODE','two'):
+            denied=self.request('GET','/api/status',headers={'Cookie':fh.SESSION_COOKIE+'='+token})
+            self.assertFalse(denied.json()['authenticated'])
 
 if __name__ == '__main__':
     unittest.main()

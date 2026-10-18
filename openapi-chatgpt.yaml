@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: FlightHunter AI
-  version: 4.0.0
-  description: Recherche mondiale aller-retour Google Flights via SerpApi, sans réservation ni garantie des prix.
+  version: 6.0.0
+  description: Recherche mondiale Google Flights via SerpApi. Vise six offres ou plus si disponibles; jusqu’à 9 requêtes par recherche. Pas de réservation, aucun tarif garanti.
 servers:
   - url: https://flighthunter-ai.onrender.com
 paths:
@@ -48,12 +48,32 @@ paths:
           content:
             application/json:
               schema: {type: object, additionalProperties: true}
+  /api/airline-link:
+    post:
+      operationId: airlineBookingLink
+      summary: Obtenir une option de réservation compagnie pour une offre déjà retrouvée.
+      description: Déclenche une requête SerpApi supplémentaire; n'effectue pas de réservation. Lorsque la compagnie n'a pas de lien exploitable, renvoie un lien Google Flights en fallback.
+      security: [{PrivateCode: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [offer_id]
+              properties:
+                offer_id: {type: string, description: Identifiant d'offre obtenu précédemment via searchFlights.}
+      responses:
+        '200':
+          description: Lien de réservation externe contrôlé ou lien de recherche de secours.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
   /api/airports:
     get:
       operationId: searchAirports
-      summary: Suggestions mondiales de villes et aéroports (requête SerpApi potentiellement facturable)
-      security:
-        - PrivateCode: []
+      summary: Suggestions de villes et d'aéroports via SerpApi (potentiellement facturables)
+      security: [{PrivateCode: []}]
       parameters:
         - name: q
           in: query

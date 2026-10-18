@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urljoin
 
 import requests
 from fastapi import FastAPI, Request
@@ -23,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
-app = FastAPI(title='FlightHunter AI', version='5.0.0', docs_url=None, redoc_url=None)
+app = FastAPI(title='FlightHunter AI', version='6.0.0', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 API_KEY = os.environ.get('SERPAPI_API_KEY', '').strip()
@@ -34,6 +35,14 @@ RATE: dict[str, float] = {}
 CACHE_LOCK = threading.RLock()
 CACHE: dict[str, tuple[float, dict]] = {}
 CACHE_SECONDS = 15 * 60
+# The free SerpApi plan is limited; never promise six where the source has fewer.
+TARGET_OFFERS = 6
+MAX_RETURN_LOOKUPS = 8
+MAX_OFFERS = 12
+BOOKING_REFS: dict[str, tuple[float, str, str, str]] = {}
+BOOKING_LOCK = threading.RLock()
+BOOKING_RESULTS: dict[str, tuple[float, dict]] = {}
+
 AIRPORT_CACHE: dict[str, tuple[float, list[dict]]] = {}
 AIRPORT_LOCK = threading.RLock()
 AUTOCOMPLETE_RATE: dict[str, float] = {}
@@ -44,6 +53,45 @@ def is_ready() -> bool:
     # Require private access code to protect shared free API quota on a public website.
     return bool(API_KEY and ACCESS_CODE)
 
+
+
+SESSION_TTL = 30 * 24 * 3600
+SESSION_COOKIE = 'fh_private_session'
+LOGIN_LOCK = threading.Lock()
+LOGIN_FAILURES: dict[str, list[float]] = {}
+
+
+def session_signature(timestamp: str) -> str:
+    # Rotating either secret invalidates all sessions. Never log either secret.
+    key = hashlib.sha256((API_KEY + ':' + ACCESS_CODE).encode()).digest()
+    return hmac.new(key, timestamp.encode(), hashlib.sha256).hexdigest()
+
+
+def make_session_cookie() -> str:
+    timestamp = str(int(time.time()))
+    return timestamp + '.' + session_signature(timestamp)
+
+
+def session_valid(request: Request) -> bool:
+    if not is_ready():
+        return False
+    value = request.cookies.get(SESSION_COOKIE, '')
+    if not value or '.' not in value:
+        return False
+    stamp, sig = value.split('.', 1)
+    if not stamp.isdecimal() or len(sig) != 64:
+        return False
+    issued = int(stamp)
+    if not 0 <= time.time() - issued <= SESSION_TTL:
+        return False
+    return hmac.compare_digest(sig, session_signature(stamp))
+
+
+def authorized(request: Request) -> bool:
+    if not is_ready():
+        return False
+    header = request.headers.get('X-Access-Code', '')
+    return (bool(header) and secrets.compare_digest(header, ACCESS_CODE)) or session_valid(request)
 
 def normalize_location(value: object) -> str:
     """Google Flights accepts IATA airport lists or Google location knowledge IDs."""
@@ -58,8 +106,8 @@ def normalize_location(value: object) -> str:
 def validate(body: dict) -> dict:
     if not isinstance(body, dict):
         raise ValueError('Paramètres invalides.')
-    origin = normalize_location(body.get('origin', 'CDG,ORY'))
-    dest = normalize_location(body.get('destination', 'PVG,SHA'))
+    origin = normalize_location(body.get('origin', ''))
+    dest = normalize_location(body.get('destination', ''))
     if origin == dest or (len(origin) == len(dest) == 3 and origin == dest):
         raise ValueError('Le départ et l’arrivée doivent être différents.')
     start, end = str(body.get('departure', '')).strip(), str(body.get('return', '')).strip()
@@ -149,7 +197,7 @@ def serpapi_parameters(c: dict, departure_token: str | None = None) -> dict:
 
 
 def serpapi_query(c: dict, departure_token: str | None = None) -> dict:
-    response = requests.get(SERPAPI_URL, params=serpapi_parameters(c, departure_token), timeout=35)
+    response = requests.get(SERPAPI_URL, params=serpapi_parameters(c, departure_token), timeout=20 if departure_token else 35)
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict):
@@ -265,32 +313,40 @@ def trip_matches_leg(leg: dict, c: dict, outbound: bool) -> bool:
 
 
 def price_offers(data: dict, c: dict) -> list[dict]:
-    """Only return flights verified by a second SerpApi request are considered complete."""
-    available = []
+    """Verify real combinations. Target >= 6 where available, without inventing.
+
+    The initial SerpApi response lists outbound trips, while a departure_token
+    fetches possible returning trips (and the combined total price).
+    """
+    candidates = []
     seen = set()
-    for outbound_item in sorted(rows(data), key=lambda o: parsed_price(o) or 1e8):
-        token = outbound_item.get('departure_token')
-        out = leg_info(outbound_item)
-        if not token or not trip_matches_leg(out, c, True):
+    for flight in sorted(rows(data), key=lambda o: parsed_price(o) or 1e8):
+        token = flight.get('departure_token')
+        out = leg_info(flight)
+        if not isinstance(token, str) or not token or not trip_matches_leg(out, c, True):
             continue
         if c['stops'] != 'any' and out['stops'] > int(c['stops']):
             continue
-        flight_numbers = tuple(str(f.get('flight_number') or '') for f in outbound_item.get('flights') or [])
-        if flight_numbers in seen:
+        key = tuple((f.get('flight_number'), (f.get('departure_airport') or {}).get('time')) for f in flight.get('flights') or [])
+        if not key or key in seen:
             continue
-        seen.add(flight_numbers)
-        available.append((outbound_item, token, out))
-        if len(available) >= 3:
+        seen.add(key)
+        candidates.append((token, out))
+        if len(candidates) >= MAX_RETURN_LOOKUPS:
             break
-    result = []
-    # Max 1 outbound search + 3 return searches: manageable free-tier usage.
-    for outbound_item, token, out in available:
+    found = []
+    fingerprints = set()
+    lookups = 0
+    started = time.monotonic()
+    for token, out in candidates:
+        if lookups and time.monotonic() - started > 68:
+            break
         try:
             returning = serpapi_query(c, token)
         except (requests.RequestException, RuntimeError, ValueError):
             continue
-        cheapest = sorted(rows(returning), key=lambda o: parsed_price(o) or 1e8)
-        for back_item in cheapest:
+        lookups += 1
+        for back_item in sorted(rows(returning), key=lambda o: parsed_price(o) or 1e8):
             price = parsed_price(back_item)
             back = leg_info(back_item)
             if not price or not trip_matches_leg(back, c, False):
@@ -298,16 +354,84 @@ def price_offers(data: dict, c: dict) -> list[dict]:
             if c['stops'] != 'any' and back['stops'] > int(c['stops']):
                 continue
             carriers = list(dict.fromkeys(out['carriers'] + back['carriers']))
-            dest = out['to']
-            fingerprint = hashlib.sha256(repr((out['departure'], back['departure'], carriers, price)).encode()).hexdigest()[:15]
-            result.append({'id': fingerprint, 'source': 'Google Flights via SerpApi', 'price': price,
-                           'carrier': ' / '.join(carriers) or 'Compagnie non précisée',
-                           'outbound': out, 'inbound': back, 'destination': dest,
-                           'baggage': 'À vérifier lors de la réservation',
-                           'price_status': 'Prix affiché, non garanti chez le vendeur',
-                           'booking_link': search_links(c)[0]['google']})
-            break  # cheapest valid return for this specific outbound itinerary
-    return sorted(result, key=lambda offer: offer['price'])
+            unique = (tuple((seg.get('flight_number'), seg.get('departure')) for seg in out['segments']),
+                      tuple((seg.get('flight_number'), seg.get('departure')) for seg in back['segments']))
+            fingerprint = hashlib.sha256(repr(unique).encode()).hexdigest()[:24]
+            if fingerprint in fingerprints:
+                continue
+            fingerprints.add(fingerprint)
+            booking_token = back_item.get('booking_token')
+            if isinstance(booking_token, str) and booking_token:
+                # Private, expiring server-side reference. Do not expose a booking token to browsers.
+                with BOOKING_LOCK:
+                    BOOKING_REFS[fingerprint] = (time.monotonic() + CACHE_SECONDS, booking_token,
+                                                 out['carriers'][0] if out['carriers'] else '',
+                                                 search_links(c)[0]['google'])
+                    if len(BOOKING_REFS) > 500:
+                        BOOKING_REFS.clear()
+            found.append({'id': fingerprint, 'source': 'Google Flights via SerpApi', 'price': price,
+                          'carrier': ' / '.join(carriers) or 'Compagnie non précisée',
+                          'outbound': out, 'inbound': back, 'destination': out['to'],
+                          'baggage': 'À vérifier lors de la réservation',
+                          'price_status': 'Prix affiché, non garanti chez le vendeur',
+                          'direct_booking_available': isinstance(booking_token, str) and bool(booking_token),
+                          'booking_link': search_links(c)[0]['google']})
+            if len(found) >= MAX_OFFERS:
+                break
+        if len(found) >= TARGET_OFFERS:
+            break
+    return sorted(found, key=lambda o: o['price'])
+
+
+def booking_options_for_token(token: str) -> dict:
+    """On-demand only: a separate SerpApi credit may be consumed."""
+    response = requests.get(SERPAPI_URL, params={'engine':'google_flights',
+        'api_key':API_KEY, 'booking_token':token, 'currency':'EUR', 'gl':'fr', 'hl':'fr'}, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict) or data.get('error'):
+        raise RuntimeError('Aucune option de réservation disponible pour ce vol.')
+    return data
+
+
+def google_booking_redirect(booking_request: dict) -> str | None:
+    """Return direct Google click route or resolve its POST to a supplier URL.
+
+    The official SerpApi booking_request payload must be posted *as-is*.
+    Only the exact documented Google endpoint is contacted; no arbitrary URL fetches.
+    """
+    url = booking_request.get('url') if isinstance(booking_request, dict) else ''
+    if not isinstance(url, str) or not url.startswith('https://www.google.com/travel/clk/f'):
+        return None
+    parsed_initial = urlparse(url)
+    if parsed_initial.scheme != 'https' or parsed_initial.hostname != 'www.google.com' or parsed_initial.path != '/travel/clk/f':
+        return None
+    post_data = booking_request.get('post_data')
+    if not post_data:
+        # A bare click endpoint contains no itinerary selection, so is not a deep link.
+        return url if parsed_initial.query else None
+    if not isinstance(post_data, str) or len(post_data)>40000:
+        return None
+    try:
+        r = requests.post(url, data=post_data.encode('utf-8'),
+                          headers={'Content-Type':'application/x-www-form-urlencoded'},
+                          timeout=14, allow_redirects=False)
+        if r.status_code not in (301,302,303,307,308):
+            return None
+        target = urljoin(url, r.headers.get('Location',''))
+        parsed = urlparse(target)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.hostname.endswith('.google.com'):
+            return None
+        # No execution at the target; this is a destination to open only after a user click.
+        import ipaddress
+        try:
+            ipaddress.ip_address(parsed.hostname)
+            return None
+        except ValueError:
+            pass
+        return target
+    except requests.RequestException:
+        return None
 
 
 @app.middleware('http')
@@ -332,12 +456,42 @@ def health():
 
 
 @app.get('/api/status')
-def status():
+def status(request: Request):
     return {'product': 'FlightHunter AI', 'ready': is_ready(),
             'api_mode': 'production' if is_ready() else 'links_only',
             'provider': 'SerpApi' if API_KEY else 'none',
             'needs_access_code': bool(API_KEY and not ACCESS_CODE),
-            'private_search': bool(ACCESS_CODE)}
+            'private_search': bool(ACCESS_CODE), 'authenticated': session_valid(request)}
+
+
+@app.post('/api/session/login')
+def create_session(body: dict, request: Request):
+    code = str(body.get('code', '')) if isinstance(body, dict) else ''
+    addr = request.client.host if request.client else 'unknown'
+    now = time.monotonic()
+    with LOGIN_LOCK:
+        failures = [t for t in LOGIN_FAILURES.get(addr, []) if t > now - 900]
+        LOGIN_FAILURES[addr] = failures
+        if len(failures) >= 6:
+            return JSONResponse({'error':'Trop de codes incorrects. Réessaie dans 15 minutes.'}, status_code=429)
+    if not is_ready() or not code or not secrets.compare_digest(code, ACCESS_CODE):
+        with LOGIN_LOCK:
+            LOGIN_FAILURES.setdefault(addr, []).append(now)
+        return JSONResponse({'error':'Code privé incorrect.'}, status_code=401)
+    with LOGIN_LOCK:
+        LOGIN_FAILURES.pop(addr, None)
+    response = JSONResponse({'ok': True, 'authenticated': True,
+                             'message':'Session privée active pendant 30 jours.'})
+    response.set_cookie(key=SESSION_COOKIE, value=make_session_cookie(),
+                        max_age=SESSION_TTL, secure=True, httponly=True, samesite='lax', path='/')
+    return response
+
+
+@app.post('/api/session/logout')
+def clear_session():
+    response = JSONResponse({'ok': True, 'authenticated': False})
+    response.delete_cookie(key=SESSION_COOKIE, path='/')
+    return response
 
 
 @app.post('/api/links')
@@ -353,7 +507,7 @@ def public_links(body: dict):
 @app.get('/api/airports')
 def airport_suggestions(q: str, request: Request):
     # Avoid spending API credits unless there is a deliberate, authenticated query.
-    if not is_ready() or not secrets.compare_digest(request.headers.get('X-Access-Code', ''), ACCESS_CODE):
+    if not authorized(request):
         return JSONResponse({'error': 'Saisis ton code privé avant d’afficher les suggestions.'}, status_code=401)
     query = q.strip()
     if not (3 <= len(query) <= 70) or not re.fullmatch(r"[\w\s\-À-ÿ']{3,70}", query, re.UNICODE):
@@ -403,6 +557,47 @@ def airport_suggestions(q: str, request: Request):
     return {'suggestions': suggestions[:15], 'from_cache': False}
 
 
+@app.post('/api/airline-link')
+def airline_link(body: dict, request: Request):
+    """User-triggered attempt to follow an actual airline booking option."""
+    if not authorized(request):
+        return JSONResponse({'error':'Code privé requis.'}, status_code=401)
+    offer_id = str(body.get('offer_id','')) if isinstance(body,dict) else ''
+    if not re.fullmatch('[a-f0-9]{24}', offer_id):
+        return JSONResponse({'error':'Offre non reconnue.'}, status_code=400)
+    with BOOKING_LOCK:
+        record = BOOKING_REFS.get(offer_id)
+    if not record or record[0]<time.monotonic():
+        return JSONResponse({'error':'Offre expirée. Relance ta recherche.'}, status_code=404)
+    _expiry, token, preferred, google_link = record
+    with BOOKING_LOCK:
+        previous = BOOKING_RESULTS.get(offer_id)
+        if previous and previous[0] > time.monotonic():
+            return previous[1]
+    try:
+        result = booking_options_for_token(token)
+    except (requests.RequestException, ValueError, RuntimeError):
+        answer = {'status':'fallback', 'url':google_link,
+                  'message':'La compagnie ne propose pas de lien direct vérifiable pour cette offre. Recherche Google Flights ouverte.'}
+        with BOOKING_LOCK: BOOKING_RESULTS[offer_id] = (time.monotonic()+CACHE_SECONDS, answer)
+        return answer
+    for opt in result.get('booking_options') or []:
+        seller = opt.get('together') if isinstance(opt,dict) else None
+        if not isinstance(seller,dict) or not seller.get('airline'):
+            continue
+        # Only claim an airline link if Google labels the seller as the airline.
+        link = google_booking_redirect(seller.get('booking_request') or {})
+        if link:
+            answer={'status':'airline', 'url':link, 'seller':str(seller.get('book_with') or preferred),
+                    'message':'Option compagnie identifiée par Google Flights. Vérifie les dates, voyageurs et le tarif final.'}
+            with BOOKING_LOCK: BOOKING_RESULTS[offer_id] = (time.monotonic()+CACHE_SECONDS, answer)
+            return answer
+    answer = {'status':'fallback','url':google_link,
+              'message':'Aucun lien direct compagnie exploitable. Google Flights permet de poursuivre la recherche.'}
+    with BOOKING_LOCK: BOOKING_RESULTS[offer_id] = (time.monotonic()+CACHE_SECONDS, answer)
+    return answer
+
+
 @app.post('/api/search')
 def search(body: dict, request: Request):
     try:
@@ -417,8 +612,7 @@ def search(body: dict, request: Request):
                         message=('Clé SerpApi détectée. Configure aussi APP_ACCESS_CODE dans Render pour protéger ton quota gratuit.'
                                  if API_KEY else 'Comparateurs disponibles. SerpApi n’est pas encore configuré.'))
         return response
-    supplied = request.headers.get('X-Access-Code', '')
-    if not secrets.compare_digest(supplied, ACCESS_CODE):
+    if not authorized(request):
         return JSONResponse({'error': 'Code privé de recherche incorrect.'}, status_code=401)
     stamp = time.monotonic()
     addr = request.client.host if request.client else 'unknown'
@@ -431,8 +625,8 @@ def search(body: dict, request: Request):
         if len(CACHE) > 60:
             CACHE.clear()
     with RATE_LOCK:
-        if stamp - RATE.get(addr, -1e20) < 25:
-            return JSONResponse({'error': 'Recherche trop rapprochée. Réessaie dans 25 secondes.'}, status_code=429)
+        if stamp - RATE.get(addr, -1e20) < 3:
+            return JSONResponse({'error': 'Recherche trop rapprochée. Réessaie dans quelques secondes.'}, status_code=429)
         RATE[addr] = stamp
         if len(RATE) > 1000:
             RATE.clear()
@@ -444,9 +638,9 @@ def search(body: dict, request: Request):
         return JSONResponse(response, status_code=502)
     response.update(offers=offers, count=len(offers), status='ok' if offers else 'empty',
                     provider='SerpApi / Google Flights', from_cache=False,
-                    message=('Offres aller-retour avec vol retour vérifié pour trois voyageurs. Les trois départs les moins chers ont été contrôlés.'
+                    message=(f'{len(offers)} itinéraires aller-retour vérifiés parmi les options explorées. ' + ('Moins de six offres vérifiables : aucun résultat inventé.' if len(offers)<TARGET_OFFERS else 'Offres classées par prix croissant.')
                              if offers else 'Aucun tarif aller-retour complet vérifiable pour ces dates. Consulte les liens de recherche.'),
-                    searched_departures=3, possible_api_requests=4)
+                    target_offers=TARGET_OFFERS, max_possible_api_requests=1+MAX_RETURN_LOOKUPS)
     with CACHE_LOCK:
         CACHE[cache_key] = (stamp + CACHE_SECONDS, response)
     return response

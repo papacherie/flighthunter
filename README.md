@@ -50,3 +50,18 @@ node --check static/app.js
 ```
 
 Les tests intégrés couvrent les paramètres SerpApi, les âges des enfants, les bébés, la tarification catégorie adulte des adolescents, la validation des aéroports et des retours, la protection du quota, les logos autorisés et les URL. Le front a été testé dans Chromium sur **1440 px et 390 px**, sans erreur JavaScript ni débordement horizontal. Un test complet SerpApi avec une vraie clé doit être réalisé sur Render après mise en ligne. Nous ne revendiquons pas un score Lighthouse non mesuré.
+
+
+## FlightHunter AI V6 : thèmes, filtres automatiques, offres et choix compagnie
+
+- Mode clair ou sombre avec préférence locale persistante, aucune recherche préchargée : départ, arrivée et dates à saisir.
+- Changer **escales/direct** relance automatiquement la recherche si les dates et aéroports sont valides et si le code privé est présent. Une temporisation évite de déclencher plusieurs recherches pour des clics rapides.
+- Le serveur vise **au moins 6 itinéraires vérifiés lorsqu'ils existent**, sans inventer de vols. Il vérifie plusieurs retours et plafonne l'exploration à 1 recherche initiale + 8 recherches de retours (9 appels SerpApi maximum par recherche sans autres clics). Chaque changement de filtre peut consommer de nouveaux crédits ; cache de 15 min pour les paramètres identiques.
+- Sur une offre possédant un `booking_token` SerpApi, « Choisir · voir la compagnie » demande **à la demande** les `booking_options`. Si Google Flights indique une option auprès de la compagnie, le service tente de résoudre son lien de réservation. Si le fournisseur ne retourne pas un lien vérifiable, un lien de recherche Google Flights est ouvert à la place. **Aucune garantie de préremplissage auprès de toutes les compagnies**, car les vendeurs ne publient pas tous un lien profond stable. Aucun achat, aucun formulaire de paiement.
+- Toutes les requêtes payantes et les liens compagnies nécessitent `APP_ACCESS_CODE` ; SerpApi demeure configuré via `SERPAPI_API_KEY` sur Render. Ne placez aucune clé dans GitHub. 
+- **Connexion depuis une conversation ChatGPT** : l'API reste protégée par `APP_ACCESS_CODE`. Un connecteur/outil authentifié (ou un profil navigateur qui conserve un accès) doit être lié avant qu'un assistant puisse rechercher directement dans FlightHunter sans saisie manuelle répétée. Le simple déploiement d'une API publique n'accorde pas d'accès automatique à ChatGPT ; ne jamais publier le code dans un chat pour contourner cette étape.
+
+
+### Accès sans ressaisie depuis un navigateur lié à ChatGPT
+
+La V6 inclut `POST /api/session/login` pour convertir le code privé en **cookie HttpOnly Secure SameSite=Lax**, valable 30 jours et automatiquement invalidé si les secrets Render changent. Les appels SerpApi acceptent le cookie ou l'en-tête privé. L'assistant ChatGPT ne connaît aucun secret ; un **profil navigateur TinyFish** créé puis autorisé une fois par l'utilisateur peut conserver cette session et lancer des recherches à sa place. Sans connexion initiale, l'assistant ne peut pas accéder à l'API privée ; il ne faut pas rendre l'endpoint public ou introduire des clés dans les messages.
