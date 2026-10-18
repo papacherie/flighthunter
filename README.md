@@ -1,47 +1,41 @@
-# FlightHunter AI — v2.0 (SerpApi)
+# FlightHunter AI — Version 3.0 « Dark Flights »
 
-FlightHunter est un outil **de recherche et de comparaison**, jamais de réservation, de paiement ou de collecte de données bancaires.
+Nouvelle interface inspirée de la **lisibilité** de Google Flights (sans copier son identité) : fond anthracite, cartes d’itinéraires aller/retour, horaires, correspondances, prix totaux et détails dépliables.
 
-- Recherche initiale préremplie : Paris → Shanghai (PVG et SHA), 29/07/2027 — 20/08/2027, 2 adultes et 1 enfant de 8 ans.
-- SerpApi Google Flights : une requête de recherche des **allers** en AR, suivie d'une requête avec `departure_token` pour chacune des trois meilleures options de départ afin de récupérer un **retour réel**. Cette v2 ne prétend pas parcourir tous les itinéraires ni tous les revendeurs.
-- Les prix fournis par SerpApi pour les voyageurs sélectionnés sont **indicatifs** et doivent toujours être confirmés sur le site du vendeur. Bagages et suppléments à vérifier.
-- Liens de recherches préremplies vers Google Flights, KAYAK et Skyscanner, soumis à changement de formats ou filtrage anti-bot.
-- Pas d'intégration Amadeus en v2.
+## Ce qui change
 
-## Mise à jour du dépôt GitHub existant
+- **Logos réels des compagnies**, automatiquement lus dans le champ `flights[].airline_logo` renvoyé par SerpApi (Google Flights). En l'absence du lien, recherche du logo par code de compagnie dans la bibliothèque publique Google Flights (`https://www.gstatic.com/flights/airline_logos/70px/<IATA>.png`). Si inaccessible, affichage automatique des initiales.
+- Affichage des compagnies présentes à l’aller et au retour, au maximum trois logos sur la carte.
+- Détail des segments de vol, numéros de vol, correspondances, horaires et appareils lorsque l’API les fournit.
+- Cards premium sombres, couleur spécifique pour la meilleure offre, indication du budget cible de 2 500 € pour l’ensemble des voyageurs, liens vers les recherches Google Flights.
+- Responsive Mac / iPhone, pas de débordement horizontal sur écran mobile.
+- **Aucune recherche automatique au chargement** : la saisie du code privé précède l'appel SerpApi. Les liens simples sont générés via `/api/links`, sans consommer aucun crédit SerpApi.
+- Protection : seuls les liens logos HTTPS `www.gstatic.com/flights/airline_logos/*.png` sont exposés au navigateur, qui affiche une alternative lorsque l'image est absente.
 
-Dans `https://github.com/papacherie/flighthunter`, sélectionne **Add file → Upload files**, puis dépose le **contenu décompressé** du dossier v2, pas le ZIP. GitHub peut demander de confirmer le remplacement des fichiers du même nom. La structure attendue est `app.py`, `static/app.js`, `static/index.html` et les autres fichiers à la racine du dépôt. Clique sur **Commit changes**. Render est connecté à `main` avec déploiement automatique.
+## Installation (GitHub → Render)
 
-## Configuration Render
+1. Décompresser l’archive livrée et envoyer **le contenu de ce dossier** (pas le ZIP) à la racine du dépôt GitHub `papacherie/flighthunter`. Remplacer les fichiers `app.py`, `static/index.html`, `static/style.css`, `static/app.js`, `tests/test_app.py`, `README.md`. Aucun secret ne doit être commité.
+2. Valider avec **Commit changes**. Le service Render `flighthunter-ai` est déjà configuré en déploiement automatique depuis la branche `main` et doit redéployer sans nouvelle intervention.
+3. Après le statut **Live**, ouvrir `https://flighthunter-ai.onrender.com/` puis rafraîchir la page. Les fichiers CSS/JS ont des URL versionnées pour éviter de conserver le mauvais style en cache.
+4. Saisir dans le volet **Code privé** la valeur de `APP_ACCESS_CODE` déjà stockée sur Render, puis cliquer sur **Comparer les vols**.
 
-Service Render : https://dashboard.render.com/web/srv-db9svh8m7kps73eki300
+Configuration inchangée sur Render : `SERPAPI_API_KEY` et `APP_ACCESS_CODE`. Conserver ces valeurs uniquement côté serveur, jamais dans GitHub ou dans une capture. Mode Render Python avec `pip install -r requirements.txt` puis `uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1`.
 
-Dans **Environment** :
+## Tests
 
-- `SERPAPI_API_KEY` : ta clé SerpApi privée, **uniquement sur Render**.
-- `APP_ACCESS_CODE` : un code d'accès long et difficile à deviner, choisi par toi. Ce n'est **pas** la clé SerpApi. Tu le saisis ensuite dans « Configurer l'accès » sur le site FlightHunter afin de protéger les 250 appels gratuits mensuels.
-- Les anciennes variables `AMADEUS_*` ne sont pas utilisées par ce code et peuvent être retirées plus tard.
-
-**Ne mets jamais ces valeurs sur GitHub, dans un PDF partagé, ou sur une capture d'écran.** Si tu as exposé ta clé SerpApi, révoque-la sur SerpApi et mets la nouvelle dans Render.
-
-Tant que `SERPAPI_API_KEY` **et** `APP_ACCESS_CODE` ne sont pas définis, le service refuse d'interroger SerpApi pour éviter qu'un visiteur épuise ton quota. Les liens des comparateurs restent disponibles.
-
-## Tester
-
-```
-python -m pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
 python -m unittest discover -s tests -v
-uvicorn app:app --reload
+node --check static/app.js
 ```
 
-Vérifications :
-- `/health` -> `{"ok":true}`
-- `/api/status` -> `ready:true`, `provider:"SerpApi"` seulement si les deux variables sont présentes.
-- Site -> « Configurer l'accès » -> saisir `APP_ACCESS_CODE` -> « Comparer les vols ».
-- Tarifs AR triés pour **3 voyageurs** avec allers **et retours** vérifiés séparément.
+Le projet a été testé avec **12 tests backend** et une vérification en navigateur Chromium sur formats ordinateur et mobile (données de démonstration seulement pour les captures de prévisualisation). Aucune recherche réelle n'a été déclenchée pendant les tests visuels, donc aucun crédit SerpApi dépensé.
 
-## Quota et limites
+## Limites importantes
 
-Chaque recherche peut utiliser jusqu'à **4 requêtes SerpApi** : recherche des allers + recherche des retours pour 3 départs. Cache en mémoire 15 min. Ne pas utiliser de surveillance intensive sur le plan gratuit. Une recherche AR avec tous les retours n'est pas nécessairement équivalente à une disponibilité finale chez la compagnie. Il n'existe aucun mécanisme pour réserver ou bloquer les prix ici.
-
-Documentation fournisseur : https://serpapi.com/google-flights-api.
+- Les logos proviennent d’une source externe et ne sont affichés que lorsque disponibles. L’intégration ne garantit pas une identité visuelle pour chaque compagnie ni la pérennité du lien.
+- Les prix viennent des recherches Google Flights via SerpApi ; **ils ne sont pas garantis** au stade du paiement et peuvent varier selon le vendeur, les bagages, la disponibilité et les voyageurs.
+- Le moteur conserve la politique de version 2 : au maximum 3 départs sont inspectés par requêtes de retour (environ 4 appels SerpApi par recherche non mise en cache).
+- Le bouton vers Google Flights ouvre une **recherche préremplie**, pas l’option de réservation exacte déjà sélectionnée. Afficher les logos des agences/vendeurs et leurs prix de réservation exigerait des appels supplémentaires à l'API de réservation lorsque celle-ci expose les options.
+- Aucun achat, paiement, carte bancaire ou réservation automatique.
+- Les prix présentés dans **les captures de prévisualisation** sont des valeurs de démonstration, non des offres fraîchement vérifiées.

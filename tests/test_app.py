@@ -77,6 +77,39 @@ class FlightHunterTests(unittest.TestCase):
         self.assertNotIn('validtoken123', str(offers))
         self.assertNotIn('bookingTokenIsNotExposed', str(offers))
 
+    def test_logo_from_serpapi_and_fallback(self):
+        from copy import deepcopy
+        flight = deepcopy(OUTBOUND)
+        flight['flights'][0]['airline_logo'] = 'https://www.gstatic.com/flights/airline_logos/70px/GF.png'
+        logos = fh.leg_info(flight)['airline_logos']
+        self.assertEqual(logos[0]['airline'], 'Gulf Air')
+        self.assertEqual(logos[0]['code'], 'GF')
+        self.assertEqual(logos[0]['url'], 'https://www.gstatic.com/flights/airline_logos/70px/GF.png')
+        self.assertEqual(fh.leg_info(OUTBOUND)['airline_logos'][0]['url'], 'https://www.gstatic.com/flights/airline_logos/70px/GF.png')
+
+    def test_invalid_logo_urls_rejected(self):
+        for candidate in ('http://www.gstatic.com/flights/airline_logos/70px/GF.png',
+                          'https://evil.example/flights/airline_logos/70px/GF.png',
+                          'https://www.gstatic.com/other/payload.svg', 'javascript:alert(1)'):
+            self.assertEqual(fh.safe_airline_logo(candidate), '')
+
+    def test_public_links_do_not_use_serpapi(self):
+        with patch.object(fh, 'serpapi_query') as fetch:
+            r = self.request('POST', '/api/links', json=C)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.json()['links']), 2)
+        fetch.assert_not_called()
+
+    def test_logo_payload_in_priced_offer(self):
+        from copy import deepcopy
+        flight = deepcopy(OUTBOUND)
+        flight['flights'][0]['airline_logo'] = 'https://www.gstatic.com/flights/airline_logos/70px/GF.png'
+        with patch.object(fh, 'serpapi_query', return_value={'other_flights': [RETURN]}):
+            o = fh.price_offers({'best_flights': [flight]}, C)
+        self.assertEqual(len(o), 1)
+        self.assertEqual(o[0]['outbound']['airline_logos'][0]['code'], 'GF')
+        self.assertEqual(o[0]['outbound']['segments'][0]['flight_number'], 'GF 12')
+
     def test_wrong_return_day_not_presented(self):
         invalid = {**RETURN, 'flights': [
             {**RETURN['flights'][0], 'departure_airport': {'id': 'PVG', 'time': '2027-08-21 15:55'}},

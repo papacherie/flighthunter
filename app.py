@@ -15,7 +15,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 from fastapi import FastAPI, Request
@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
-app = FastAPI(title='FlightHunter AI', version='2.0.0', docs_url=None, redoc_url=None)
+app = FastAPI(title='FlightHunter AI', version='3.0.0', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 API_KEY = os.environ.get('SERPAPI_API_KEY', '').strip()
@@ -137,6 +137,43 @@ def parsed_price(f: dict) -> float | None:
         return None
 
 
+def safe_airline_logo(value: object) -> str:
+    """Only expose the documented Google Flights airline-logo image URLs."""
+    if not isinstance(value, str):
+        return ''
+    parsed = urlparse(value)
+    if parsed.scheme != 'https' or parsed.hostname != 'www.gstatic.com':
+        return ''
+    if not parsed.path.startswith('/flights/airline_logos/') or not parsed.path.lower().endswith('.png'):
+        return ''
+    return value
+
+
+def logo_entries(offer: dict) -> list[dict]:
+    flights = offer.get('flights') or []
+    entries: list[dict] = []
+    used: set[str] = set()
+    for flight in flights:
+        name = str(flight.get('airline') or '').strip()
+        flight_number = str(flight.get('flight_number') or '')
+        match = re.match(r'^([A-Z0-9]{2})\s*\d', flight_number, re.I)
+        code = match.group(1).upper() if match else ''
+        logo = safe_airline_logo(flight.get('airline_logo'))
+        if not logo and flight is flights[0]:
+            logo = safe_airline_logo(offer.get('airline_logo'))
+        if not logo and code:
+            logo = safe_airline_logo(f'https://www.gstatic.com/flights/airline_logos/70px/{code}.png')
+        identifier = code or name or logo
+        if identifier and identifier not in used:
+            entries.append({'airline': name, 'code': code, 'url': logo})
+            used.add(identifier)
+    if not entries:
+        main_logo = safe_airline_logo(offer.get('airline_logo'))
+        if main_logo:
+            entries.append({'airline': '', 'code': '', 'url': main_logo})
+    return entries[:4]
+
+
 def leg_info(offer: dict) -> dict:
     flights = offer.get('flights') or []
     if not flights or not isinstance(flights, list):
@@ -150,11 +187,29 @@ def leg_info(offer: dict) -> dict:
         duration = f'PT{mins // 60}H{mins % 60}M' if mins >= 0 else ''
     except (TypeError, ValueError):
         duration = ''
+    segments = []
+    for f in flights:
+        src = f.get('departure_airport') or {}
+        dst = f.get('arrival_airport') or {}
+        segments.append({'from': src.get('id') or '', 'to': dst.get('id') or '',
+                         'departure': str(src.get('time') or '').replace(' ', 'T'),
+                         'arrival': str(dst.get('time') or '').replace(' ', 'T'),
+                         'airline': str(f.get('airline') or ''),
+                         'flight_number': str(f.get('flight_number') or ''),
+                         'airplane': str(f.get('airplane') or '')})
+    layovers = []
+    for layover in offer.get('layovers') or []:
+        try:
+            duration_min = max(0, int(layover.get('duration') or 0))
+        except (TypeError, ValueError):
+            duration_min = 0
+        layovers.append({'id': str(layover.get('id') or ''), 'duration': duration_min})
     return {'stops': len(flights) - 1, 'from': depart.get('id') or '', 'to': arrive.get('id') or '',
-            'departure': (depart.get('time') or '').replace(' ', 'T'),
-            'arrival': (arrive.get('time') or '').replace(' ', 'T'),
+            'departure': str(depart.get('time') or '').replace(' ', 'T'),
+            'arrival': str(arrive.get('time') or '').replace(' ', 'T'),
             'via': [str(x.get('id')) for x in (offer.get('layovers') or []) if x.get('id')],
-            'carriers': airlines, 'duration': duration}
+            'carriers': airlines, 'duration': duration, 'segments': segments,
+            'layovers': layovers, 'airline_logos': logo_entries(offer)}
 
 
 def trip_matches_leg(leg: dict, c: dict, outbound: bool) -> bool:
@@ -222,7 +277,7 @@ async def security_headers(request: Request, call_next):
     res.headers['X-Frame-Options'] = 'DENY'
     res.headers['Cache-Control'] = 'no-store'
     res.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    res.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+    res.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: https://www.gstatic.com; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
     return res
 
 
@@ -243,6 +298,16 @@ def status():
             'provider': 'SerpApi' if API_KEY else 'none',
             'needs_access_code': bool(API_KEY and not ACCESS_CODE),
             'private_search': bool(ACCESS_CODE)}
+
+
+@app.post('/api/links')
+def public_links(body: dict):
+    # Generates URL templates without any supplier API call or consumption of credits.
+    try:
+        criteria = validate(body)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+    return {'criteria': criteria, 'links': search_links(criteria)}
 
 
 @app.post('/api/search')
