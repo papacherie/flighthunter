@@ -40,7 +40,7 @@ class FlightHunterTests(unittest.TestCase):
 
     def test_v5_ui_assets_and_logo_csp(self):
         resp = self.request('GET', '/')
-        self.assertIn('v=6.0.0', resp.text)
+        self.assertIn('v=7.0.0', resp.text)
         self.assertIn('id="passenger-popover"', resp.text)
         self.assertIn('id="calendar-panel"', resp.text)
         self.assertNotIn('SERPAPI_API_KEY=', resp.text)
@@ -199,7 +199,7 @@ class FlightHunterTests(unittest.TestCase):
         r=self.request('GET','/')
         self.assertEqual(r.status_code,200)
         body=r.text
-        for needle in ('v=6.0.0','id="theme-toggle"','id="origin"','id="destination"', 'id="departure"', 'id="return-date"'):
+        for needle in ('v=7.0.0','id="theme-toggle"','id="origin"','id="destination"', 'id="departure"', 'id="return-date"'):
             self.assertIn(needle,body)
         self.assertNotIn('data-code="CDG,ORY"',body)
         self.assertNotIn('value="2027-07-29"',body)
@@ -282,3 +282,5 @@ class FlightHunterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+# History v7 tests live here to keep the existing integration suite intact.

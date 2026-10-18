@@ -1,4 +1,4 @@
-"""FlightHunter AI v2 — flight discovery through SerpApi Google Flights.
+"""FlightHunter AI v7 — private search history and SerpApi Google Flights.
 
 No ticket booking or payment. API key is server side only.
 Results are indicative and are ALWAYS rechecked with the seller.
@@ -23,8 +23,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import history_store
+
 ROOT = Path(__file__).parent
-app = FastAPI(title='FlightHunter AI', version='6.0.0', docs_url=None, redoc_url=None)
+app = FastAPI(title='FlightHunter AI', version='7.0.0', docs_url=None, redoc_url=None)
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 API_KEY = os.environ.get('SERPAPI_API_KEY', '').strip()
@@ -450,6 +452,15 @@ def home():
     return FileResponse(ROOT / 'static' / 'index.html')
 
 
+@app.get('/r/{row_id}')
+def saved_search_page(row_id: str):
+    # The page itself is a blank shell. The snapshot is fetched separately
+    # after authentication and is NEVER embedded in public HTML.
+    if not re.fullmatch(r'[a-f0-9]{24}', row_id):
+        return JSONResponse({'error': 'Lien invalide.'}, status_code=404)
+    return FileResponse(ROOT / 'static' / 'index.html')
+
+
 @app.get('/health')
 def health():
     return {'ok': True, 'product': 'FlightHunter AI'}
@@ -461,7 +472,8 @@ def status(request: Request):
             'api_mode': 'production' if is_ready() else 'links_only',
             'provider': 'SerpApi' if API_KEY else 'none',
             'needs_access_code': bool(API_KEY and not ACCESS_CODE),
-            'private_search': bool(ACCESS_CODE), 'authenticated': session_valid(request)}
+            'private_search': bool(ACCESS_CODE), 'authenticated': session_valid(request),
+            'history_storage': history_store.storage_type()}
 
 
 @app.post('/api/session/login')
@@ -598,6 +610,83 @@ def airline_link(body: dict, request: Request):
     return answer
 
 
+
+
+def history_error(exc: Exception):
+    # Never leak database connection strings, credentials, SQL or table names.
+    return JSONResponse({'error': 'Historique momentanément indisponible : vérifie le stockage configuré.'}, status_code=503)
+
+
+def history_auth(request: Request):
+    if not authorized(request):
+        return JSONResponse({'error': 'Connexion privée requise pour consulter tes recherches.'}, status_code=401)
+    return None
+
+
+def check_history_id(row_id: str):
+    if not re.fullmatch(r'[a-f0-9]{24}', row_id):
+        return JSONResponse({'error':'Lien de recherche invalide.'},status_code=404)
+    return None
+
+
+@app.get('/api/history')
+def list_history(request: Request):
+    denied=history_auth(request)
+    if denied is not None: return denied
+    try:
+        return {'items': history_store.list_recent(), 'storage': history_store.storage_type(),
+                'durable': history_store.using_postgres(),
+                'notice':('Historique enregistré dans PostgreSQL.' if history_store.using_postgres()
+                          else 'Stockage local : sur Render gratuit, les données peuvent disparaître à tout redéploiement.')}
+    except Exception as exc:
+        return history_error(exc)
+
+
+@app.get('/api/history/{row_id}')
+def read_history(row_id: str, request: Request):
+    denied=history_auth(request)
+    if denied is not None: return denied
+    invalid=check_history_id(row_id)
+    if invalid is not None: return invalid
+    try:
+        record=history_store.get(row_id)
+    except Exception as exc:
+        return history_error(exc)
+    if record is None:
+        return JSONResponse({'error':'Recherche introuvable ou supprimée.'}, status_code=404)
+    return {'record':record, 'storage':history_store.storage_type()}
+
+
+@app.delete('/api/history/{row_id}')
+def remove_history(row_id: str, request: Request):
+    denied=history_auth(request)
+    if denied is not None: return denied
+    invalid=check_history_id(row_id)
+    if invalid is not None: return invalid
+    try:
+        removed=history_store.delete(row_id)
+    except Exception as exc:
+        return history_error(exc)
+    return {'ok':removed} if removed else JSONResponse({'error':'Recherche introuvable.'},status_code=404)
+
+
+@app.post('/api/history/{row_id}/refresh')
+def refresh_history(row_id: str, request: Request):
+    denied=history_auth(request)
+    if denied is not None: return denied
+    invalid=check_history_id(row_id)
+    if invalid is not None: return invalid
+    try:
+        record=history_store.get(row_id)
+    except Exception as exc:
+        return history_error(exc)
+    if record is None:
+        return JSONResponse({'error':'Recherche introuvable.'},status_code=404)
+    body={**record['snapshot']['criteria'], 'force_refresh':True}
+    # Do not overwrite the original: a refresh creates a separately dated record.
+    return search(body,request)
+
+
 @app.post('/api/search')
 def search(body: dict, request: Request):
     try:
@@ -619,7 +708,7 @@ def search(body: dict, request: Request):
     cache_key = json.dumps(criteria, sort_keys=True)
     with CACHE_LOCK:
         cache = CACHE.get(cache_key)
-        if cache and cache[0] > stamp:
+        if not (body.get('force_refresh') is True) and cache and cache[0] > stamp:
             value = {**cache[1], 'from_cache': True}
             return value
         if len(CACHE) > 60:
@@ -641,6 +730,17 @@ def search(body: dict, request: Request):
                     message=(f'{len(offers)} itinéraires aller-retour vérifiés parmi les options explorées. ' + ('Moins de six offres vérifiables : aucun résultat inventé.' if len(offers)<TARGET_OFFERS else 'Offres classées par prix croissant.')
                              if offers else 'Aucun tarif aller-retour complet vérifiable pour ces dates. Consulte les liens de recherche.'),
                     target_offers=TARGET_OFFERS, max_possible_api_requests=1+MAX_RETURN_LOOKUPS)
+    # Save the exact snapshot returned to the user, with no secret or booking token.
+    # Database failures must not break the underlying flight search.
+    if response['status'] in ('ok','empty'):
+        try:
+            row_id = history_store.save(response)
+            response['history_id']=row_id
+            response['history_url']='/r/'+row_id
+            response['history_saved']=True
+        except Exception:
+            response['history_saved']=False
+            response['history_warning']='Offres reçues, mais historique non enregistré (stockage indisponible).'
     with CACHE_LOCK:
         CACHE[cache_key] = (stamp + CACHE_SECONDS, response)
     return response

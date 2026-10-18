@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FlightHunter AI
-  version: 6.0.0
+  version: 7.0.0
   description: Recherche mondiale Google Flights via SerpApi. Vise six offres ou plus si disponibles; jusqu’à 9 requêtes par recherche. Pas de réservation, aucun tarif garanti.
 servers:
   - url: https://flighthunter-ai.onrender.com
@@ -82,6 +82,61 @@ paths:
       responses:
         '200':
           description: Suggestions d'aéroports et villes, sans résultat de vol.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /api/history:
+    get:
+      operationId: listSavedFlightSearches
+      summary: Lister les recherches privées sauvegardées (ne consomme aucun crédit SerpApi)
+      security: [{PrivateCode: []}]
+      responses:
+        '200':
+          description: Derniers résultats enregistrés, avec prix indicatifs historiques.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /api/history/{id}:
+    get:
+      operationId: getSavedFlightSearch
+      summary: Retrouver le résultat exact d'une recherche déjà sauvegardée
+      security: [{PrivateCode: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[a-f0-9]{24}$'}
+      responses:
+        '200':
+          description: Instantané privé, date de collecte et liens Google Flights.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+    delete:
+      operationId: deleteSavedFlightSearch
+      summary: Effacer un instantané privé
+      security: [{PrivateCode: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[a-f0-9]{24}$'}
+      responses:
+        '200': {description: Instantané supprimé.}
+  /api/history/{id}/refresh:
+    post:
+      operationId: refreshSavedFlightSearch
+      summary: Actualiser une recherche ancienne (requêtes SerpApi facturables)
+      description: Ne modifie pas l'ancien instantané, crée un nouveau lien privé daté. Jusqu'à 9 appels SerpApi.
+      security: [{PrivateCode: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[a-f0-9]{24}$'}
+      responses:
+        '200':
+          description: Nouveaux résultats indicatifs et nouveau history_url.
           content:
             application/json:
               schema: {type: object, additionalProperties: true}

@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const form = $('flight-form');
-const state = { ready:false, adults:1, children:[], offers:[], budget:2500, priceLimit:Infinity, airlines:new Set(), selectedAirlines:new Set(), sort:'price', fastest:false, tab:'list', calendarMonth:new Date().toISOString().slice(0,7), calendarDate:new Date().toISOString().slice(0,10), observed:new Map(), criteriaKey:'' };
+const state = { historyViewed:null, historySavedId:null, ready:false, adults:1, children:[], offers:[], budget:2500, priceLimit:Infinity, airlines:new Set(), selectedAirlines:new Set(), sort:'price', fastest:false, tab:'list', calendarMonth:new Date().toISOString().slice(0,7), calendarDate:new Date().toISOString().slice(0,10), observed:new Map(), criteriaKey:'' };
 const txt = value => document.createTextNode(String(value ?? ''));
 function e(tag,cls,content){const n=document.createElement(tag);if(cls)n.className=cls;if(content!==undefined)n.append(txt(content));return n;}
 function val(id){return $(id).value.trim();}
@@ -22,7 +22,7 @@ function dateValid(){const a=val('departure'),b=val('return-date');return /^\d{4
 function airportLabel(id){return $(id).value.split(' · ')[0].trim()||'—';}
 function setLabels(){const parts=[`${state.adults} adulte${state.adults>1?'s':''}`];if(state.children.length)parts.push(`${state.children.length} enfant${state.children.length>1?'s':''}`);$('passengers-label').textContent=parts.join(', ');$('adults-count').textContent=String(state.adults);$('children-count').textContent=String(state.children.length);$('map-origin').textContent=airportLabel('origin');$('map-destination').textContent=airportLabel('destination');}
 function note(message,kind=''){const a=$('alert');a.className='alert'+(kind==='error'?' error':'');a.textContent=message;a.hidden=!message;}
-function resetOffers(){if(!state.offers.length)return;state.offers=[];state.airlines.clear();state.selectedAirlines.clear();$('hero-lowest').textContent='—';$('hero-price-sub').textContent='Lancez une recherche pour actualiser les tarifs';$('result-count').textContent='0 résultat';$('results-summary').textContent='Les critères ont changé : relancez la recherche pour actualiser les tarifs.';$('map-price').textContent='Prix non encore disponible';$('results').replaceChildren(emptyCard('Tarifs à actualiser','Cliquez sur « Rechercher les vols » pour obtenir des offres correspondant aux critères modifiés.'));refreshAirlines();}
+function resetOffers(){if(state.historyViewed){state.historyViewed=null;setSavedLink(null); }if(!state.offers.length)return;state.offers=[];state.airlines.clear();state.selectedAirlines.clear();$('hero-lowest').textContent='—';$('hero-price-sub').textContent='Lancez une recherche pour actualiser les tarifs';$('result-count').textContent='0 résultat';$('results-summary').textContent='Les critères ont changé : relancez la recherche pour actualiser les tarifs.';$('map-price').textContent='Prix non encore disponible';$('results').replaceChildren(emptyCard('Tarifs à actualiser','Cliquez sur « Rechercher les vols » pour obtenir des offres correspondant aux critères modifiés.'));refreshAirlines();}
 function emptyCard(title,description){const card=e('div','empty-state');card.append(e('div','empty-icon','✈'),e('h3','',title),e('p','',description));return card;}
 function closePassengers(){$('passenger-popover').hidden=true;$('passenger-trigger').setAttribute('aria-expanded','false');}
 function renderChildren(){const box=$('children-ages');box.replaceChildren();state.children.forEach((child,i)=>{const row=e('div','age-row'),label=e('label','','Enfant '+(i+1)+' · âge'),select=e('select','age-select');select.setAttribute('aria-label',`Âge de l'enfant ${i+1}`);for(let age=0;age<=17;age++){const opt=e('option','',age===0?'Moins de 1 an':age===1?'1 an':age+' ans');opt.value=age;opt.selected=child.age===age;select.append(opt);}select.addEventListener('change',()=>{child.age=Number(select.value);if(child.age>=2)child.seat=true;renderChildren();resetOffers();setLabels();initialLinks();});label.append(select);row.append(label);if(child.age<2){const seatLabel=e('label','','Bébé'),seatSelect=e('select','');seatSelect.setAttribute('aria-label',`Siège ou genoux pour le bébé ${i+1}`);for(const [value,labelText] of [['lap','Sur les genoux'],['seat','Avec siège']]){const opt=e('option','',labelText);opt.value=value;opt.selected=child.seat===(value==='seat');seatSelect.append(opt);}seatSelect.addEventListener('change',()=>{child.seat=seatSelect.value==='seat';resetOffers();initialLinks();});seatLabel.append(seatSelect);row.append(seatLabel);}box.append(row);});setLabels();}
@@ -68,7 +68,97 @@ function showAccess(){$('access-panel').hidden=false;$('access-toggle').setAttri
 async function status(){try{const r=await fetch('/api/status',{cache:'no-store'});const j=await r.json();if(!r.ok)throw Error();state.ready=Boolean(j.ready);state.authenticated=Boolean(j.authenticated);$('live-status').classList.toggle('ready',state.ready);$('live-status').replaceChildren(e('span','state-dot'),txt(state.ready?' SerpApi connecté':' Mode liens uniquement'));const led=$('api-status');led.parentElement.classList.toggle('ready',state.ready);led.textContent=state.ready?'Moteur SerpApi prêt · recherche privée activée':j.needs_access_code?'Code de protection manquant sur Render':'Comparateurs disponibles · tarifs directs non configurés';if(state.ready&&!hasAccess())$('search-hint').textContent='Pour rechercher des prix, renseignez votre code privé (en haut à droite).';}catch{$('api-status').textContent='État du moteur momentanément indisponible';}}
 async function submit(ev){if(ev)ev.preventDefault();if(!airportValid('origin')||!airportValid('destination')){note('Sélectionnez un aéroport dans les suggestions, ou saisissez un code IATA valide (JFK, LHR, CDG…).','error');return;}if(!dateValid()){note('Choisissez une date de retour ultérieure au départ.','error');return;}if(peopleCount()>8){note('Le nombre total de voyageurs ne doit pas dépasser huit.','error');return;}if(state.ready&&!hasAccess()){showAccess();note('Renseignez votre code privé avant de lancer la recherche.','error');return;}
 state.searchStartedAt=Date.now();setLoading(true);note('');const box=$('results');box.replaceChildren();const loading=emptyCard('Recherche en cours…','Nous récupérons les itinéraires aller-retour et vérifions les retours.');loading.querySelector('.empty-icon').replaceChildren(e('span','loading-spinner'));box.append(loading);$('results-summary').textContent='Recherche de vols en cours : jusqu’à 4 requêtes SerpApi…';
-try{const c=criteria(),r=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json','X-Access-Code':val('access-code')},body:JSON.stringify(c)}),data=await r.json();if(!r.ok){if(r.status===401)showAccess();throw Error(data.error||data.message||'Erreur serveur '+r.status);}linkCards(data.links||[]);state.offers=Array.isArray(data.offers)?data.offers.filter(o=>Number(o.price)>0).sort((a,b)=>Number(a.price)-Number(b.price)):[];state.selectedAirlines.clear();refreshAirlines();const cheapest=state.offers[0]?.price;if(cheapest){$('hero-lowest').textContent=fmt(cheapest);$('hero-price-sub').textContent=`Pour ${peopleCount()} voyageurs · prix indicatif`;state.observed.set(currentCalendarKey(c.departure),cheapest);}else{$('hero-lowest').textContent='—';$('hero-price-sub').textContent='Aucun prix vérifié pour ces dates';}const count=state.offers.length;$('results-summary').textContent=count?`${count} itinéraire${count>1?'s':''} aller-retour, prix total pour le groupe. Les résultats affichés sont ceux récupérés, pas l'ensemble des vols du marché.`:data.message||'Aucune offre vérifiée : essayez une autre recherche.';if(data.warning&&count)note(data.warning);renderOffers();renderCalendar();}catch(err){state.offers=[];refreshAirlines();box.replaceChildren(emptyCard('La recherche n’a pas abouti',err.message));$('results-summary').textContent=err.message;note(err.message,'error');}finally{setLoading(false);}}
+try{const c=criteria(),r=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json','X-Access-Code':val('access-code')},body:JSON.stringify(c)}),data=await r.json();if(!r.ok){if(r.status===401)showAccess();throw Error(data.error||data.message||'Erreur serveur '+r.status);}linkCards(data.links||[]);state.offers=Array.isArray(data.offers)?data.offers.filter(o=>Number(o.price)>0).sort((a,b)=>Number(a.price)-Number(b.price)):[];state.selectedAirlines.clear();refreshAirlines();const cheapest=state.offers[0]?.price;if(cheapest){$('hero-lowest').textContent=fmt(cheapest);$('hero-price-sub').textContent=`Pour ${peopleCount()} voyageurs · prix indicatif`;state.observed.set(currentCalendarKey(c.departure),cheapest);}else{$('hero-lowest').textContent='—';$('hero-price-sub').textContent='Aucun prix vérifié pour ces dates';}const count=state.offers.length;setSavedLink(data.history_id||null, data.checked_at, false);if(data.history_warning)note(data.history_warning,'error');loadHistory();$('results-summary').textContent=count?`${count} itinéraire${count>1?'s':''} aller-retour, prix total pour le groupe. Les résultats affichés sont ceux récupérés, pas l'ensemble des vols du marché.`:data.message||'Aucune offre vérifiée : essayez une autre recherche.';if(data.warning&&count)note(data.warning);renderOffers();renderCalendar();}catch(err){state.offers=[];refreshAirlines();box.replaceChildren(emptyCard('La recherche n’a pas abouti',err.message));$('results-summary').textContent=err.message;note(err.message,'error');}finally{setLoading(false);}}
+
+// V7 — Private server-side history: links contain only opaque IDs, never secrets.
+function authHeaders(){return {'X-Access-Code':val('access-code')};}
+function savedDate(iso){try{return new Intl.DateTimeFormat('fr-FR',{dateStyle:'medium',timeStyle:'short'}).format(new Date(iso));}catch{return String(iso||'');}}
+function setSavedLink(id,checkedAt,archived=false){
+ const bar=$('saved-result-bar');state.historySavedId=id;
+ if(!id){bar.hidden=true;return;}
+ const url='/r/'+id;bar.hidden=false;
+ $('saved-result-label').textContent=(archived?'🕘 Résultats archivés du ':'✓ Résultats enregistrés le ')+savedDate(checkedAt)+' · Tarifs indicatifs à vérifier.';
+ $('saved-result-link').href=url;
+ $('saved-result-link').textContent='Ouvrir ce résultat ↗';
+}
+function historyCard(item){
+ const card=e('article','history-card'),head=e('div','history-card-head'),body=e('div','history-card-body'),actions=e('div','history-actions');
+ const title=e('strong','',`${item.origin} ⇄ ${item.destination}`);
+ const date=e('small','',savedDate(item.saved_at));head.append(title,date);
+ const trips=e('p','',`${fmtDate(item.departure)} → ${fmtDate(item.return)} · ${item.adults+item.children_ages.length} voyageur${item.adults+item.children_ages.length>1?'s':''}`);
+ const budget=e('div','history-price',item.min_price?`Dès ${fmt(item.min_price)} · ${item.offers_count} offre${item.offers_count>1?'s':''}`:'Aucune offre vérifiée à cette date');
+ body.append(trips,budget,e('p','history-stale','Prix enregistré · non actualisé'));
+ const open=e('a','outline-btn','Ouvrir ↗');open.href='/r/'+item.id;
+ const refresh=e('button','outline-btn','↻ Prix actuels');refresh.type='button';refresh.addEventListener('click',()=>refreshSaved(item.id));
+ const remove=e('button','history-delete','Supprimer');remove.type='button';remove.addEventListener('click',async()=>{
+  if(!confirm('Supprimer définitivement cette recherche de ton historique ?'))return;
+  try{const r=await fetch('/api/history/'+item.id,{method:'DELETE',headers:authHeaders()});const d=await r.json();if(!r.ok)throw Error(d.error||'Suppression impossible');if(state.historySavedId===item.id)setSavedLink(null);await loadHistory();}catch(err){note(err.message,'error');}
+ });actions.append(open,refresh,remove);card.append(head,body,actions);return card;
+}
+async function loadHistory(){
+ const box=$('history-list');
+ if(!hasAccess()){box.replaceChildren(e('p','history-empty','🔒 Connecte-toi avec ton code privé pour accéder à tes recherches enregistrées.'));$('history-storage-note').textContent='Historique accessible uniquement après authentification.';return;}
+ try{const r=await fetch('/api/history',{headers:authHeaders(),cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Historique indisponible');
+  $('history-storage-note').textContent=d.durable?'Stockage serveur activé · liens accessibles avec ta session privée.':'⚠ Stockage temporaire sur cet hébergement : les recherches peuvent disparaître au prochain redéploiement. Pour des liens durables, configure PostgreSQL.';
+  box.replaceChildren();if(!Array.isArray(d.items)||!d.items.length){box.append(e('p','history-empty','Aucune recherche enregistrée pour le moment. Lance une recherche pour créer le premier lien privé.'));return;}
+  for(const item of d.items)box.append(historyCard(item));
+ }catch(err){box.replaceChildren(e('p','history-empty',err.message));}
+}
+function applyHistoryCriteria(c){
+ const origin=$('origin'),destination=$('destination');
+ origin.value=c.origin;destination.value=c.destination;
+ origin.dataset.code=c.origin;destination.dataset.code=c.destination;
+ $('departure').value=c.departure;$('return-date').value=c.return;
+ state.adults=c.adults;state.children=(c.children_ages||[]).map(x=>({...x}));
+ const selected=document.querySelector(`input[name="stops-radio"][value="${c.stops}"]`);if(selected)selected.checked=true;
+ state.calendarDate=c.departure;state.calendarMonth=c.departure.slice(0,7);
+ renderChildren();setLabels();initialLinks();
+}
+function displaySnapshot(snapshot,id,savedAt){
+ applyHistoryCriteria(snapshot.criteria);
+ state.offers=(snapshot.offers||[]).map(o=>({...o, direct_booking_available:false})).filter(o=>Number(o.price)>0).sort((a,b)=>Number(a.price)-Number(b.price));
+ state.historyViewed=id;state.selectedAirlines.clear();refreshAirlines();
+ const cheapest=state.offers[0]?.price;
+ $('hero-lowest').textContent=cheapest?fmt(cheapest):'—';
+ $('hero-price-sub').textContent='Prix archivé · pas un tarif en temps réel';
+ $('results-summary').textContent=`${state.offers.length} offres enregistrées le ${savedDate(savedAt)}. Ces prix peuvent avoir changé. Actualise pour rechercher les tarifs en vigueur.`;
+ if(cheapest)state.observed.set(currentCalendarKey(snapshot.criteria.departure),cheapest);
+ linkCards(snapshot.links||[]);setSavedLink(id,snapshot.checked_at||savedAt,true);renderOffers();renderCalendar();setTab('list');
+ $('resultats').scrollIntoView({block:'start'});
+}
+async function openSaved(id){
+ if(!hasAccess()){$('history-list').replaceChildren(e('p','history-empty','🔒 Ce lien est privé. Connecte-toi dans FlightHunter pour consulter la recherche archivée.'));showAccess();return;}
+ try{const r=await fetch('/api/history/'+id,{headers:authHeaders(),cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Recherche introuvable');
+  displaySnapshot(d.record.snapshot,id,d.record.saved_at);
+ }catch(err){note(err.message,'error');}
+}
+async function refreshSaved(id){
+ if(!id)return;
+ if(!confirm('Rechercher les prix actuels pour ce trajet ? Cette opération peut consommer jusqu’à 9 crédits SerpApi.'))return;
+ const btn=$('saved-result-refresh');btn.disabled=true;btn.textContent='Actualisation…';
+ setLoading(true);note('Actualisation des prix en cours…');
+ try{const r=await fetch('/api/history/'+id+'/refresh',{method:'POST',headers:authHeaders()});const d=await r.json();if(!r.ok)throw Error(d.error||d.message||'Actualisation impossible');
+  if(!d.criteria||!Array.isArray(d.offers))throw Error('Réponse fournisseur incorrecte');
+  applyHistoryCriteria(d.criteria);state.historyViewed=null;
+  state.offers=d.offers.filter(o=>Number(o.price)>0).sort((a,b)=>Number(a.price)-Number(b.price));
+  state.selectedAirlines.clear();refreshAirlines();const cheapest=state.offers[0]?.price;
+  $('hero-lowest').textContent=cheapest?fmt(cheapest):'—';
+  $('hero-price-sub').textContent='Prix actualisés · vérification fournisseur requise';
+  $('results-summary').textContent=`${state.offers.length} offre(s) vérifiée(s) le ${savedDate(d.checked_at)}. Nouvel instantané enregistré.`;
+  linkCards(d.links||[]);setSavedLink(d.history_id||null,d.checked_at);renderOffers();renderCalendar();setTab('list');
+  note(d.history_warning||'Recherche actualisée. Vérifie les tarifs finaux auprès du vendeur.');
+  await loadHistory();$('resultats').scrollIntoView({block:'start'});
+ }catch(err){note(err.message||'Actualisation impossible','error');}
+ finally{setLoading(false);btn.disabled=false;btn.textContent='↻ Actualiser les prix';}
+}
+$('saved-result-copy').addEventListener('click',async()=>{
+ if(!state.historySavedId)return;
+ const url=new URL('/r/'+state.historySavedId,location.origin).href;
+ try{await navigator.clipboard.writeText(url);note('Lien privé copié. La connexion FlightHunter reste nécessaire pour voir les résultats.');}
+ catch{note('Lien à copier : '+url);}
+});
+$('history-reload').addEventListener('click',loadHistory);
+$('saved-result-refresh').addEventListener('click',()=>refreshSaved(state.historySavedId));
 function setTheme(theme){
  const dark=theme==='dark';document.documentElement.dataset.theme=dark?'dark':'light';
  $('theme-toggle').textContent=dark?'☀ Mode clair':'☾ Mode sombre';
@@ -89,7 +179,7 @@ $('access-save').addEventListener('click',async()=>{
    state.authenticated=true;$('access-code').value='';
    try{sessionStorage.removeItem('fh-access-code')}catch{}
    $('access-panel').hidden=true;$('access-toggle').setAttribute('aria-expanded','false');
-   note('Session privée ouverte pendant 30 jours : tu peux lancer la recherche sans ressaisir ton code.');
+   note('Session privée ouverte pendant 30 jours : tu peux lancer la recherche sans ressaisir ton code.');loadHistory();if(/^\/r\/[a-f0-9]{24}$/.test(location.pathname))openSaved(location.pathname.split('/').pop());
  }catch(err){note(err.message||'Code privé incorrect','error');}
  finally{$('access-save').disabled=false;$('access-save').textContent='Valider le code';}
 });
@@ -125,4 +215,4 @@ for(const tab of ['list','calendar','map'])$('tab-'+tab).addEventListener('click
 $('calendar-prev').addEventListener('click',()=>shiftCalendar(-1));$('calendar-next').addEventListener('click',()=>shiftCalendar(1));
 $('calendar-apply').addEventListener('click',()=>{$('departure').value=state.calendarDate;if(val('return-date')<=state.calendarDate){const d=new Date(state.calendarDate+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+7);$('return-date').value=d.toISOString().slice(0,10);}resetOffers();initialLinks();setTab('list');$('recherche').scrollIntoView({behavior:'smooth'});note('Date sélectionnée : lancez une recherche pour obtenir son tarif.');});
 form.addEventListener('submit',submit);
-renderChildren();setLabels();limitLabel();renderCalendar();status();initialLinks();
+renderChildren();setLabels();limitLabel();renderCalendar();status().then(()=>{loadHistory();const match=location.pathname.match(/^\/r\/([a-f0-9]{24})$/);if(match)openSaved(match[1]);});initialLinks();

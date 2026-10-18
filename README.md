@@ -65,3 +65,34 @@ Les tests intégrés couvrent les paramètres SerpApi, les âges des enfants, le
 ### Accès sans ressaisie depuis un navigateur lié à ChatGPT
 
 La V6 inclut `POST /api/session/login` pour convertir le code privé en **cookie HttpOnly Secure SameSite=Lax**, valable 30 jours et automatiquement invalidé si les secrets Render changent. Les appels SerpApi acceptent le cookie ou l'en-tête privé. L'assistant ChatGPT ne connaît aucun secret ; un **profil navigateur TinyFish** créé puis autorisé une fois par l'utilisateur peut conserver cette session et lancer des recherches à sa place. Sans connexion initiale, l'assistant ne peut pas accéder à l'API privée ; il ne faut pas rendre l'endpoint public ou introduire des clés dans les messages.
+
+## V7 — Mes recherches (octobre 2026)
+
+Cette version ajoute un **historique privé côté serveur**, consultable depuis l'onglet « Mes recherches » et le lien « Mes recherches » du formulaire. Les recherches **effectuées à partir de V7** sont automatiquement archivées après réception des résultats, y compris si aucun billet n'est trouvé. Les anciens résultats V6 ne peuvent pas être reconstitués sans une nouvelle recherche.
+
+### Fonctionnement
+
+- Chaque recherche sauvegardée contient les critères, la date/heure de collecte, 0 à 12 offres, leurs vols aller/retour et le prix **total** indicatif du groupe. Le code privé, la clé SerpApi, les cookies et tokens de réservation ne sont **jamais** enregistrés dans l'historique.
+- La liste des **40 recherches récentes** est consultable via `GET /api/history` après authentification. Le stockage est borné aux **80 instantanés les plus récents** pour limiter les coûts (les plus anciens sont supprimés).
+- Chaque recherche possède un identifiant aléatoire et un lien du type `https://flighthunter-ai.onrender.com/r/<identifiant>`. La page ne contient **aucune donnée publique** ; la récupération des résultats nécessite une **session privée FlightHunter** valide. La personne à qui tu envoies le lien doit être autorisée sur FlightHunter.
+- **Actualiser les prix** relance explicitement une recherche SerpApi (jusqu'à 9 appels), et crée un **nouvel instantané daté**, sans écraser l'ancien. La liste des résultats enregistrés n'appelle jamais SerpApi ; ouvrir un lien archivé ne consomme **aucun** crédit.
+- Les **anciens tarifs** sont étiquetés comme archivés/non actuels ; les boutons de réservation directe périmés sont désactivés, les liens Google Flights restent présents si disponibles. Aucun tarif ni accès compagnie n'est garanti.
+- **Supprimer** efface immédiatement l'enregistrement côté serveur. L'interface utilise des cookies `HttpOnly` déjà mis en place dans V6 ou le code privé via un en-tête, sans exposer les données dans la page HTML.
+
+### Stockage : Render et les limites du gratuit
+
+**Important : le système fonctionne en stockage local transitoire même sans PostgreSQL, mais ce stockage n'est pas durable sur un service Web Render gratuit.** Il peut être perdu à chaque redéploiement ou redémarrage. La présence d'un lien `/r/...` ne garantit donc pas, à elle seule, qu'il fonctionnera durablement.
+
+Pour la persistance entre déploiements, configurer la variable d'environnement Render `DATABASE_URL` avec **l'Internal Database URL** d'une base PostgreSQL placée dans la même région que le service (`Frankfurt`). Ne collez **jamais** cette URL dans GitHub ou dans une conversation ; elle contient un mot de passe. Le service V7 possède `psycopg2-binary` pour supporter directement PostgreSQL. La base et les tables sont créées automatiquement au premier usage.
+
+**Render Postgres Free expire 30 jours après sa création** et les données finissent par être supprimées sans passage à un plan payant ou migration ; aucune sauvegarde automatique n'est incluse. Une base gratuite `flighthunter-history` a été créée le **18 octobre 2026**, avec expiration annoncée **17 novembre 2026**. Pour une conservation réellement longue durée, migrer vers une base persistante non éphémère avant l'expiration (ou exporter le contenu du datastore). Ne passez pas à une formule payante sans décision explicite.
+
+### Déploiement de V7 sur GitHub et Render
+
+1. Copier **le contenu** de ce dossier (pas le dossier parent) dans la racine du dépôt `papacherie/flighthunter`, en remplaçant les fichiers V6. Notamment `app.py`, `history_store.py`, `static/index.html`, `static/app.js`, `static/style.css`, `requirements.txt`, `tests/`.
+2. Valider dans GitHub ; Render redéploie normalement automatiquement avec la V7.
+3. Dans le tableau de bord Render, accéder à la base `flighthunter-history` > **Connect** > copier la **Internal Database URL** dans la nouvelle variable d'environnement du service web `flighthunter-ai` appelée **`DATABASE_URL`**. Ne pas remplacer `SERPAPI_API_KEY` ni `APP_ACCESS_CODE`. Cette étape est nécessaire pour rendre l'historique résistant aux redéploiements.
+4. Au besoin, redéployer après la modification d'environnement. Connectez-vous puis ouvrez `/api/status` (affiche `history_storage: postgres` après branchement) ; l'onglet « Mes recherches » précisera « Stockage serveur activé ».
+5. Une recherche de billets depuis FlightHunter ou depuis le navigateur TinyFish lié à ChatGPT créera alors un instantané et renverra dans la réponse privée les propriétés `history_id` et `history_url`. ChatGPT peut fournir le lien durable de cette recherche tant que la base demeure active.
+
+**Tests V7** : `python -m unittest discover -s tests -v` inclut 33 tests (dont 7 tests d'historique) ; `node --check static/app.js` contrôle la syntaxe de l'interface. La recherche SerpApi réelle et la connexion à Render Postgres restent à vérifier après déploiement.
